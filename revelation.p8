@@ -8,36 +8,52 @@ inventory = { socom = 4,
 equipped = "socom"
 
 -- load the sprites and that
-function init_level(lv)
-  sprites = { player = {{17,18,19,20,21,22,23}, -- north (last two=roll/shoot)
-                        {1,2,3,4,5,6,7},        -- east (last two=roll/shoot)
-                        {33,34,35,36,37,38,39}, -- south (last two=roll/shoot)
-                        {49,50,51,52,53,54,55}, -- west (last two=roll/shoot)
-                        {8,9,10,11}, -- death
-                        {25, 24}}, -- laser
-              enemy1 = {{208,209,210,209,210,211,211}, -- north (last two=roll/shoot)
-                        {192,193,194,193,194,195,195}, -- east (last two=roll/shoot)
-                        {224,225,226,225,226,227,227}, -- south (last two=roll/shoot)
-                        {240,241,242,241,242,243,243}, -- west (last two=roll/shoot)
-                        {196,197,198,199}, -- death
-                        {41, 40}, -- laser
-                        {228, 229}, -- stunned
-                        {212, 213, 214, 215}}, -- attack
-              objects = {blood_prints = {26, 27, 28, 29},
-                         scanner = {131, 134},
-                         door = {{67, 129}, {68, 130}},
-                         goal = {135},
-                         relay = {132}},
-              items   = {c4 = 133}}
+sprites = { player = {{17,18,19,20,21,22,23}, -- north (last two=roll/shoot)
+                      {1,2,3,4,5,6,7},        -- east (last two=roll/shoot)
+                      {33,34,35,36,37,38,39}, -- south (last two=roll/shoot)
+                      {49,50,51,52,53,54,55}, -- west (last two=roll/shoot)
+                      {8,9,10,11}, -- death
+                      {25, 24}}, -- laser
+            enemy1 = {{208,209,210,209,210,211,211}, -- north (last two=roll/shoot)
+                      {192,193,194,193,194,195,195}, -- east (last two=roll/shoot)
+                      {224,225,226,225,226,227,227}, -- south (last two=roll/shoot)
+                      {240,241,242,241,242,243,243}, -- west (last two=roll/shoot)
+                      {196,197,198,199}, -- death
+                      {41, 40}, -- laser
+                      {228, 229}, -- stunned
+                      {212, 213, 214, 215}}, -- attack
+            objects = {blood_prints = {26, 27, 28, 29},
+                       scanner = {131, 134},
+                       door = {{67, 129}, {68, 130}},
+                       goal = {135},
+                       relay = {132}},
+            items   = {c4 = 133}}
 
-  -- palette swap commands and movement function strings for enemy variants
-  enemies = {enemy1 = {{"clockwise", {5, 5}}, -- variant 1
-                       {"line", {5, 2}} }} -- variant 2
-            
-  
-  levels = {{11,0,15,6}, {0,0,11,10}} -- xstart, ystart, w, h
-  pos_map = {{0,1,0,-1}, {-1,0,1,0}} -- for converting a direction to a position change
-  level = lv
+-- palette swap commands and movement function strings for enemy variants
+enemy_variants = {enemy1 = {{"clockwise", {5, 5}}, -- variant 1
+                            {"line", {5, 2}} }} -- variant 2
+          
+-- global variables and that
+pos_map = {{0,1,0,-1}, {-1,0,1,0}} -- for converting a direction to a position change
+
+-- level data
+levels = {{11,0,15,6}, {0,0,11,10}} -- xstart, ystart, w, h
+level_enemy_variants = {{2,2}, {2,1,1,1,1}}
+
+-- map runthrough replacements (sprite #, pattern, facing dir)
+-- note: facing dir for doors and other items is [0/1] rather than [0/1/2/3]
+map_replace = {{67, "door", 0}, -- closed regular door
+               {68, "door", 1}, 
+               {1,  "player",  1}, -- player
+               {17,  "player", 0},
+               {33,  "player", 2},
+               {49,  "player", 3},
+               {192,  "enemy1", 1}, -- enemy1
+               {208,  "enemy1", 0},
+               {224,  "enemy1", 2},
+               {240,  "enemy1", 3}}
+
+function reset_level()
   turn = 0
   turn_start = nil
   idle_start = nil
@@ -46,73 +62,113 @@ function init_level(lv)
   frame = 1
   z_down = 0
   x_down = 0
-
-  if (inventory["socom"] > -1) inventory["socom"] = 4
-  if (inventory["c4"] > -1) inventory["c4"] = 2
 end
 
-function init_actors()
+function init_level_from_map(lv)
+  actor_count = 0
+  enemy_count = 0
+
+  if (inventory["socom"] > -1) inventory["socom"] = 4
+  if (inventory["c4"] > -1) inventory["c4"] = 2  
+  
   actors = {}
+  
   scanners = {}
   relays = {}
   doors = {}
   goals = {}
   items = {}
-  if (level == 1) then
-    actors = {{id = 1, pattern = "player", facing = 1, pos = {x = 1, y = 2}, life = 3, max_life = 3, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
-              {id = 2, pattern = "enemy1", facing = 1, variant = 2, pos = {x = 5, y = 1}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
-              {id = 3, pattern = "enemy1", facing = 0, variant = 2, pos = {x = 4, y = 3}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}}}
-    relays = {{pattern = "relay", pos = {x = 2, y = 1}}}
-    scanners = {{pattern = "scanner", pos = {x = 4, y = 1}, player_allowed = false}}
-    doors = {{pattern = "door", facing = 1, open = 0, open_turns = 0, pos = {x = 3,y = 1}}}
-    goals = {{pattern = "goal", pos = {x = 2, y = 4}}}
-  end
-  
-  if (level == 2) then
-    actors = {{id = 1, pattern = "player", facing = 1, variant = 1, pos = {x = 1, y = 1}, life = 3, max_life = 3, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
-              {id = 2, pattern = "enemy1", facing = 1, variant = 1, pos = {x = 5, y = 1}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
-              {id = 3, pattern = "enemy1", facing = 2, variant = 1, pos = {x = 9, y = 1}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
-              {id = 4, pattern = "enemy1", facing = 3, variant = 1, pos = {x = 9, y = 5}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
-              {id = 5, pattern = "enemy1", facing = 0, variant = 1, pos = {x = 5, y = 5}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
-              {id = 6, pattern = "enemy1", facing = 0, variant = 2, pos = {x = 3, y = 7}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}}}
-
-    scanners = {{pattern = "scanner", pos = {x = 1, y = 3}, player_allowed = false},
-               {pattern = "scanner", pos = {x = 5, y = 3}, player_allowed = false},
-               {pattern = "scanner", pos = {x = 3, y = 6}, player_allowed = false},
-               {pattern = "scanner", pos = {x = 7, y = 6}, player_allowed = false},
-               {pattern = "scanner", pos = {x = 1, y = 7}, player_allowed = true}}
-               
-    doors =    {{pattern = "door", pos = {x = 1, y = 4}, facing = 2, open = 0, open_turns = 0},
-               {pattern = "door", pos = {x = 4, y = 3}, facing = 1, open = 0, open_turns = 0},
-               {pattern = "door", pos = {x = 4, y = 6}, facing = 1, open = 0, open_turns = 0},
-               {pattern = "door", pos = {x = 7, y = 7}, facing = 2, open = 0, open_turns = 0},
-               {pattern = "door", pos = {x = 2, y = 7}, facing = 1, open = 0, open_turns = 0}}
-
-    items = {{pattern = "c4", pos = {x = 1, y = 5}}}
-    relays = {{pattern = "relay", pos = {x = 1, y = 2}}}
-    goals = {{pattern = "goal", pos = {x = 7, y = 8}}}
-  end
-
   prints = {}
 
-  player = actors[1]
+  for y = 0, levels[lv][4], 1 do
+    for x = 0, levels[lv][3], 1 do
+      for m in all(map_replace) do
+        if (lmapget(x,y) == m[1]) then
+          mset(x + levels[lv][1], y + levels[lv][2], 128) -- 128 is empty tile
+          if (m[2] == "door") add_door(m, x, y)
+          if (m[2] == "enemy1") add_enemy1(m, x, y)
+          if (m[2] == "player") add_player(m, x, y)
+        end
+      end
+    end
+  end
+
+  -- add_player(map_replace[3], 1, 2)
 end
 
+function add_door(m, x, y)
+  add(doors, {pattern = "door", facing = m[3], open = 0, open_turns = 0, pos = {x = x, y = y}})
+end
+
+function add_enemy1(m, x, y)
+  actor_count += 1
+  enemy_count += 1
+  a = {id = actor_count, pattern = "enemy1", facing = m[3], variant = level_enemy_variants[level][enemy_count], pos = {x = x, y = y}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}}
+  add(actors, a)
+end
+
+function add_player(m, x, y)
+  actor_count += 1
+  a = {id = actor_count, pattern = "player", facing = m[3], pos = {x = x, y = y}, life = 3, max_life = 3, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}}
+  add(actors, a)
+  player = a
+end
+
+-- function init_actors()
+--   actors = {}
+--   scanners = {}
+--   relays = {}
+--   doors = {}
+--   goals = {}
+--   items = {}
+--   if (level == 1) then
+--     actors = {{id = 1, pattern = "player", facing = 1, pos = {x = 1, y = 2}, life = 3, max_life = 3, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
+--               {id = 2, pattern = "enemy1", facing = 1, variant = 2, pos = {x = 5, y = 1}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
+--               {id = 3, pattern = "enemy1", facing = 0, variant = 2, pos = {x = 4, y = 3}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}}}
+--     relays = {{pattern = "relay", pos = {x = 2, y = 1}}}
+--     scanners = {{pattern = "scanner", pos = {x = 4, y = 1}, player_allowed = false}}
+--     doors = {{pattern = "door", facing = 1, open = 0, open_turns = 0, pos = {x = 3,y = 1}}}
+--     goals = {{pattern = "goal", pos = {x = 2, y = 4}}}
+--   end
+-- 
+--   if (level == 2) then
+--     actors = {{id = 1, pattern = "player", facing = 1, variant = 1, pos = {x = 1, y = 1}, life = 3, max_life = 3, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
+--               {id = 2, pattern = "enemy1", facing = 1, variant = 1, pos = {x = 5, y = 1}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
+--               {id = 3, pattern = "enemy1", facing = 2, variant = 1, pos = {x = 9, y = 1}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
+--               {id = 4, pattern = "enemy1", facing = 3, variant = 1, pos = {x = 9, y = 5}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
+--               {id = 5, pattern = "enemy1", facing = 0, variant = 1, pos = {x = 5, y = 5}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}},
+--               {id = 6, pattern = "enemy1", facing = 0, variant = 2, pos = {x = 3, y = 7}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}}}
+-- 
+--     scanners = {{pattern = "scanner", pos = {x = 1, y = 3}, player_allowed = false},
+--                {pattern = "scanner", pos = {x = 5, y = 3}, player_allowed = false},
+--                {pattern = "scanner", pos = {x = 3, y = 6}, player_allowed = false},
+--                {pattern = "scanner", pos = {x = 7, y = 6}, player_allowed = false},
+--                {pattern = "scanner", pos = {x = 1, y = 7}, player_allowed = true}}
+-- 
+--     doors =    {{pattern = "door", pos = {x = 1, y = 4}, facing = 2, open = 0, open_turns = 0},
+--                {pattern = "door", pos = {x = 4, y = 3}, facing = 1, open = 0, open_turns = 0},
+--                {pattern = "door", pos = {x = 4, y = 6}, facing = 1, open = 0, open_turns = 0},
+--                {pattern = "door", pos = {x = 7, y = 7}, facing = 2, open = 0, open_turns = 0},
+--                {pattern = "door", pos = {x = 2, y = 7}, facing = 1, open = 0, open_turns = 0}}
+-- 
+--     items = {{pattern = "c4", pos = {x = 1, y = 5}}}
+--     relays = {{pattern = "relay", pos = {x = 1, y = 2}}}
+--     goals = {{pattern = "goal", pos = {x = 7, y = 8}}}
+--   end
+-- 
+--   prints = {}
+-- 
+--   player = actors[1]
+-- end
+
 function _init()
-  restart_game()
+  load_level(starting_level)
 end
 
 function load_level(lv)
-  init_level(lv)
-  init_actors()
-  
-  player_action = {a = 0x00, d = -1}
-  idle_start = time()
-end
-
-function restart_game()
-  init_level(starting_level)
-  init_actors()
+  level = lv
+  reset_level()
+  init_level_from_map(lv)
   
   player_action = {a = 0x00, d = -1}
   idle_start = time()
@@ -163,7 +219,7 @@ function print_on_tile(actor)
 end
 
 function do_enemy1_variant_movement_ai(actor, apos)
-  movement_type = enemies[actor.pattern][actor.variant][1]
+  movement_type = enemy_variants[actor.pattern][actor.variant][1]
   apos = act_pos(actor)
   
   if (movement_type == "clockwise") then
@@ -238,7 +294,7 @@ function do_avoidance(actor)
   for a in all(actors) do
     if (a.life > 0) then
       apos = act_pos(a)
-      -- todo: some enemies should also dodge the player, so remove last clause for other ais
+      -- todo: some enemy_variants should also dodge the player, so remove last clause for other ais
       if (a.id != actor.id and apos.x == new_actor_pos.x and apos.y == new_actor_pos.y and a.pattern != "player") then
         actor.act.d = -1
       end
@@ -289,12 +345,12 @@ function act_pos(actor)
   return test_point
 end
 
-function lmapget(pos)
- return mget(pos.x + levels[level][1], pos.y + levels[level][2])
+function lmapget(x, y)
+ return mget(x + levels[level][1], y + levels[level][2])
 end
 
 function is_wall(pos)
-  m = lmapget(pos)
+  m = lmapget(pos.x, pos.y)
   
   for o in all(doors) do 
     if (o.pos.x == pos.x and o.pos.y == pos.y) then
@@ -602,12 +658,12 @@ function sprite_for(actor)
 end
 
 function draw_actors()
-  -- draw dead and stunned enemies first
+  -- draw dead and stunned enemy_variants first
   for actor in all(actors) do    
     if (actor.life <= 0 or actor.stunned_turns > 0) then
       if (actor.pattern != "player") then
         s = tile_shift(actor)
-        palswap = enemies[actor.pattern][actor.variant][2]
+        palswap = enemy_variants[actor.pattern][actor.variant][2]
         pal(palswap[1], palswap[2])
         spr(sprite_for(actor), actor.pos.x*8 + s.x, actor.pos.y*8 + s.y)
         pal(palswap[1], palswap[1])
@@ -619,7 +675,7 @@ function draw_actors()
     if (actor.life > 0) then
       if (actor.pattern != "player") then
         s = tile_shift(actor)
-        palswap = enemies[actor.pattern][actor.variant][2]
+        palswap = enemy_variants[actor.pattern][actor.variant][2]
         pal(palswap[1], palswap[2])
         spr(sprite_for(actor), actor.pos.x*8 + s.x, actor.pos.y*8 + s.y)
         pal(palswap[1], palswap[1])
@@ -644,7 +700,7 @@ end
 
 function draw_objects()
   for o in all(doors) do
-    spr(sprites["objects"][o.pattern][o.facing][o.open + 1], o.pos.x*8, o.pos.y*8)
+    spr(sprites["objects"][o.pattern][o.facing + 1][o.open + 1], o.pos.x*8, o.pos.y*8)
   end
 
   for o in all(scanners) do
@@ -803,14 +859,14 @@ __gfx__
 01566510015661101115555515566510555551110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 01166510011551100111111111566100111111100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 01566510001111000000000000166100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00100100015665100000000000100100001001000000000000100100010000100000000000000000000000000000000000000000666666666666666600000000
-010110100112511011011011010110100dccccd0000000000101101003bbbb300000000000000000000000000000000000000000611000111000111600000000
-00000000000000005100001501555510d000000d000000000155551033333333000000000000000000000000000000000000000061b308218208211600000000
-0100001001000010600000560281182000dccd000055850003b11b30000000000000000000000000000000000000000000000000601110001110001600000000
-010000100100001060000026028118200d0000d00000000003b11b30bbbbbbbb0000000000000000000000000000000000000000608218208218200600000000
-00000000000000005100001501555510000cc0000055b50001555510333333330000000000000000000000000000000000000000600011100011100600000000
-0101101001000010110110110101101001011010005555000101101001000010000000000000000000000000000000000000000061b9c8110001110600000000
-0010010001000010000000000010010000100100000000000010010013bbbb310000000000000000000000000000000000000000666666666666666600000000
+00100100015665100000000000100100001001000000000000100100010000100010010000000000000000000000000000000000666666666666666600000000
+010110100112511011011011010110100dccccd0000000000101101003bbbb300116515000000000000000000000000000000000611000111000111600000000
+00000000000000005100001501555510d000000d000000000155551033333333016115100000000000000000000000000000000061b308218208211600000000
+0100001001000010600000560281182000dccd000055850003b11b30000000000058810000000000000000000000000000000000601110001110001600000000
+010000100100001060000026028118200d0000d00000000003b11b30bbbbbbbb0018850000000000000000000000000000000000608218208218200600000000
+00000000000000005100001501555510000cc0000055b50001555510333333330151161000000000000000000000000000000000600011100011100600000000
+0101101001000010110110110101101001011010005555000101101001000010051561100000000000000000000000000000000061b9c8110001110600000000
+0010010001000010000000000010010000100100000000000010010013bbbb310010010000000000000000000000000000000000666666666666666600000000
 00000000000000000000000000000000000000000000000000100100000000000000000000000000000000008888888888888888bbbbbbbbbbbbbbbb00000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000008222222222222228b33333333333333b00000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000008288882929292828b3bbbb333993883b00000000
@@ -869,13 +925,13 @@ __gfx__
 0001010000011f000010000000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __map__
 4061424640616161616142645452416161614200000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-508063617380808080805073808081808080500000000000ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-508081805080535353805050808063618261730000000000ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-508050808180808053805060416173808080500000000000ffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-6382738050805380538050885080818080805000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+5021636173808080808050730184438383f0500000000000ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+508081805080535353805050808063614461730000000000ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+5080508081808080538050604161738080f0500000000000ffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+6382738050805380538050895087438380805000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 5080508050808080808050466061516161616200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-5080508081807080406162888888880000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-5080818063455182738888888888880000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+5080508081807080406162898989890000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+5080818063455182738989898989890000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 606152617380508050ffbfbf0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000606152616200bfbf0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 4061616161614161616161420000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
