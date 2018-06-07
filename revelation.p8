@@ -29,7 +29,8 @@ sprites = { player = {{17,18,19,20,21,22,23}, -- north (last two=roll/shoot)
                        door = {{67, 129}, {68, 130}},
                        goal = {135},
                        relay = {132}},
-            items   = {c4 = 133} }
+            items   = {socom = 133,
+                       c4 = 133} }
 
 -- we use mset to replace the map while it's in play, so,
 -- we store a list of replaced tiles to put back when the level is reset
@@ -112,6 +113,7 @@ function init_level_from_map(lv)
           if (m[2] == "scanner") add_scanner(m, x, y)
           if (m[2] == "relay") add_relay(m, x, y)
           if (m[2] == "goal") add_goal(m, x, y)
+          if (m[2] == "item") add_item(m, x, y)
         end
       end
     end
@@ -311,15 +313,14 @@ end
 function end_actors_turns()
   -- todo: different acts have different patterns
   -- perform all moves first so shots line up
-  -- todo: player should attempt throw first thing.  `or (actor.id == player.id and equipped == "hands" and actor.act.a == )`
   
   for actor in all(actors) do
-    if (actor.act.a == 0x00) perform_act(actor)
+    perform_move(actor)
   end  
 
   -- perform the moves
   for actor in all(actors) do
-    if (actor.act.a != 0x00) perform_act(actor)
+    perform_act(actor)
     actor.act = {a = 0x00, d = -1}
   end
 end
@@ -339,8 +340,8 @@ function act_pos(actor)
   if (is_wall(test_point)) return actor_point
 
   -- todo: other future moves may do not move the player. consider refactoring all actions.
-  if (actor.id == player.id and actor.act.a == 0x01 and equipped != "hands") return actor_point
   if (actor.id != player.id and actor.act.a != 0x00) return actor_point
+  if (actor.id == player.id and actor.act.a != 0x00) return actor_point
   return test_point
 end
 
@@ -465,19 +466,14 @@ function will_have_actor(np, exclude_pattern)
   return false
 end
 
-function attempt_melee(actor, throw)
+function attempt_melee(actor)
   attack_point = act_pos(actor)
   h = has_actor(attack_point, "player")
   w = will_have_actor(attack_point, "player")
   if (h) then
     moving_out_point = act_pos(h)
     if (moving_out_point.x == attack_point.x and moving_out_point.y == attack_point.y) then
-      if (not throw) then
-        stun_actor(h, 3)
-      else
-        stun_actor(h, 6)
-      end
-
+      stun_actor(h, 3)
       return h
     end
     
@@ -485,12 +481,7 @@ function attempt_melee(actor, throw)
   end
   
   if (w) then
-    if (not throw) then
-      stun_actor(w, 3)
-    else
-      stun_actor(w, 6)
-    end
-
+    stun_actor(w, 3)
     return w
   end
 
@@ -500,7 +491,7 @@ end
 function attempt_move(actor)
   attempt_blood_prints(actor)
   -- todo: characters other than player can melee
-  if (actor.pattern == "player") attempt_melee(actor, false)
+  if (actor.pattern == "player") attempt_melee(actor)
   actor.pos = act_pos(actor)
 end
 
@@ -551,11 +542,7 @@ function attempt_action(player)
     return
   end
 
-  a = attempt_melee(player, true)
-  tx = player.pos.x
-  ty = player.pos.y
-  player.pos = act_pos(player)
-  if (a) a.pos = { x = tx, y = ty }
+  attempt_melee(player)
 end
 
 function attempt_c4(actor)
@@ -570,16 +557,18 @@ function attempt_shot(actor)
   end
 end
 
+function perform_move(actor)
+  if (actor.act.a == 0x00 or (actor.id == player.id and equipped == "hands")) attempt_move(actor)
+end
+
 function perform_act(actor)
-  if (actor.act.a == 0x00) then
-    attempt_move(actor)
-  else 
-    if (actor.act.a == 0x01) then
-      if (actor.id == player.id) then
+  if (actor.act.a == 0x01) then
+    if (actor.id == player.id) then
+      if (equipped != "hands") then
         attempt_action(actor)
-      else
-        attempt_shot(actor)
       end
+    else
+      attempt_shot(actor)
     end
   end
 end
