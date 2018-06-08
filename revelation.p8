@@ -81,6 +81,7 @@ function reset_level()
   chunk = 0
   last_frame = 0
   frame = 1
+  biframe = 1
   z_down = 0
   x_down = 0  
 end
@@ -597,6 +598,7 @@ end
 function update_frame(start)
   chunk = flr((time() - start) * 100)
   frame = mid(1, flr(chunk / 25) + 1, 4)
+  biframe = mid(1, flr(chunk / 12.5) + 1, 8)
   if (frame != last_frame) then
     roll_frame()
   end
@@ -836,7 +838,14 @@ end
 function _draw()
   cls()
   l = levels[level]
-  camera((player.pos.x * 8) - 64, (player.pos.y * 8) - 64)
+  a = act_pos(player)
+  if (player.pos.x == a.x and player.pos.y == a.y) then
+    camera((player.pos.x * 8) - 64, (player.pos.y * 8) - 64)
+  else
+    xd = a.x - player.pos.x
+    yd = a.y - player.pos.y
+    camera((xd * biframe) + (player.pos.x * 8) - 64, (yd * biframe) + (player.pos.y * 8) - 64)
+  end
   map(l[1], l[2], 0, 0, l[3], l[4])
   draw_objects()
   draw_prints()
