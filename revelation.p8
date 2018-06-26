@@ -2,7 +2,8 @@ pico-8 cartridge // http://www.pico-8.com
 version 16
 __lua__
 -- debug values to reset on release
-starting_level = 6
+game_speed = 2
+starting_level = 4
 inventory = { socom = -1,
               c4 = -1 }
 inventory_max = { socom = 4,
@@ -47,7 +48,7 @@ enemy_variants = {enemy1 = {{"clockwise", {5, 5}}, -- variant 1
 pos_map = {{0,1,0,-1}, {-1,0,1,0}}
 
 -- level data
-levels = {{0,10,13,9}, {13,9,12,12}, {11,0,9,6}, {20,0,5,7}, {0,0,11,10}, {26,0,22,16}} -- xstart, ystart, w, h
+levels = {{0,10,13,9}, {13,9,12,12}, {11,0,9,6}, {20,0,6,8}, {0,0,11,10}, {26,0,22,16}} -- xstart, ystart, w, h
 level_items = {{}, {}, {"socom"}, {}, {"c4"}, {}}
 level_enemy_variants = {{}, {2,1,2}, {2,2}, {2,2}, {1,1,1,1,2}, {}}
 
@@ -687,7 +688,7 @@ function roll_frame()
 end
 
 function update_frame(start)
-  chunk = flr((time() - start) * 100)
+  chunk = flr(((time() - start) * game_speed) * 100)
   frame = mid(1, flr(chunk / 25) + 1, 4)
   biframe = mid(1, flr(chunk / 12.5) + 1, 8)
   if (frame != last_frame) then
