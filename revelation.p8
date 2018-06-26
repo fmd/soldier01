@@ -3,7 +3,7 @@ version 16
 __lua__
 -- debug values to reset on release
 game_speed = 2
-starting_level = 5
+starting_level = 6
 inventory = { socom = -1,
               c4 = -1 }
 inventory_max = { socom = 4,
@@ -271,7 +271,7 @@ function do_enemy1_ai(actor)
   if (actor.stunned_turns > 0) then
     actor.stunned_turns -= 1
     if (actor.stunned_turns > 0) return
-    ha = has_actor(actor.pos, "")
+    ha = has_live_actor(actor.pos, "")
     if (ha and ha.id != actor.id) actor.stunned_turns = 1; return
   end
   
@@ -355,18 +355,18 @@ end
 function end_actors_turns()
   -- todo: different acts have different patterns
   -- todo: dry
-  -- perform all moves first so shots line up  
-  if (player.blood_prints >= 1) redirect_existing_prints(player, "blood_prints"); player.blood_prints -= 1
-  if (is_snow(player.pos)) redirect_existing_prints(player, "snow_prints")
-  perform_move(player)
-  
+  -- perform all moves first so shots line up
   for actor in all(actors) do    
     if (actor != player) then 
       if (actor.blood_prints >= 1) redirect_existing_prints(actor, "blood_prints"); actor.blood_prints -= 1
       if (is_snow(actor.pos)) redirect_existing_prints(actor, "snow_prints")
       perform_move(actor)
     end
-  end  
+  end
+
+  if (player.blood_prints >= 1) redirect_existing_prints(player, "blood_prints"); player.blood_prints -= 1
+  if (is_snow(player.pos)) redirect_existing_prints(player, "snow_prints")
+  perform_move(player)
 
   -- perform the acts
   for actor in all(actors) do
@@ -517,7 +517,7 @@ function pickup_prints(actor)
   end
 end
 
-function has_actor(np, exclude_pattern)
+function has_live_actor(np, exclude_pattern)
   for a in all(actors) do
     if (a.life > 0) then
       if (a.pattern != exclude_pattern and a.pos.x == np.x and a.pos.y == np.y) then
@@ -545,28 +545,14 @@ function attempt_melee(actor)
   attack_point = act_pos(actor)
   printh("attack x:" .. attack_point.x .. " y:" .. attack_point.y)
   
-  h = has_actor(attack_point, "player")
+  h = has_live_actor(attack_point, "player")
   if (h) printh("has? y")
   
-  w = will_have_actor(attack_point, "player")
-  if (w) printh("will? y")
-  
   if (h) then
-    h_moving_to = act_pos(h)
-    printh("move out x:" .. h_moving_to.x .. " y:" .. h_moving_to.y)
-    if (h_moving_to.x == attack_point.x and h_moving_to.y == attack_point.y) then
-      printh("pow h")
-      stun_actor(h, 3)
-      return h
-    end
+    stun_actor(h, 3)
+    return h
   end
   
-  if (w) then
-    printh("pow w")
-    stun_actor(w, 3)
-    return w
-  end
-
   return nil
 end
 
