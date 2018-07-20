@@ -223,10 +223,10 @@ function input_action()
 end
 
 function is_empty(t)
-    for _,_ in pairs(t) do
-        return false
-    end
-    return true
+  for _,_ in pairs(t) do
+    return false
+  end
+  return true
 end
 
 function print_on_tile(actor)
@@ -593,12 +593,15 @@ function collect_tile_line(actor, d, ignore_glass)
   ty = actor.pos.y + to_pos(d).y
   
   i = 1
-  while not (is_wall({x = tx, y = ty}) and (not is_glass({x = tx, y = ty}) or not ignore_glass)) do
-    collected[i] = {x = tx, y = ty}
+  p = {x = tx, y = ty}
+  while not (is_wall(p) and (not is_glass(p) or not ignore_glass)) do
+    collected[i] = p
     i+=1
     
     tx += to_pos(d).x
     ty += to_pos(d).y
+
+    p = {x = tx, y = ty}
   end
   
   return collected
