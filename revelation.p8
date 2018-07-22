@@ -2,17 +2,17 @@ pico-8 cartridge // http://www.pico-8.com
 version 16
 __lua__
 -- --- iffy/general todo --- --
--- todo: knife and throwing knife (pick up only from body or lost)
 -- todo: introduce blood footprint mechanic with some levels
 -- todo: finish c4 placement
 -- --- refactor todo --- --
 -- todo: convert coord system to strings
 -- todo: convert animation data to strings
--- todo: 
+-- todo: refactor entire input system
+-- todo: refactor c4 timer
 
 -- debug values to reset on release
 game_speed = 2
-starting_level = 1
+starting_level = 9
 inventory = { socom = 4,
               c4 = 2 }
 inventory_max = { socom = 4,
@@ -20,10 +20,10 @@ inventory_max = { socom = 4,
 equipped = "c4"
 
 -- load the sprites and that
-sprites = { player = {{17,18,19,18,21,22,23}, -- north (last two=roll/shoot)
-                      {1,2,3,2,5,6,7},        -- east (last two=roll/shoot)
-                      {33,34,35,34,37,38,39}, -- south (last two=roll/shoot)
-                      {49,50,51,50,53,54,55}, -- west (last two=roll/shoot)
+sprites = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/shoot/fly)
+                      {1,2,3,2,5,6,7,4},        -- east (last three=roll/shoot/fly)
+                      {33,34,35,34,37,38,39,36}, -- south (last three=roll/shoot/fly)
+                      {49,50,51,50,53,54,55,52}, -- west (last three=roll/shoot/fly)
                       {8,9,10,11}, -- death
                       {25, 24}}, -- laser
             enemy1 = {{208,209,210,209,210,211,211}, -- north (last two=roll/shoot)
@@ -84,6 +84,14 @@ map_replace = {{67,  "door", 0}, -- closed regular door
                {132, "relay"}, -- relays have no extra attribs yet
                {135, "goal"},  -- goals have no extra attribs yet
                {133, "item"}} -- the item type is taken from the level_items variable
+
+function cross_tiles(pos)
+  return {{d = 0, x = pos.x, y = pos.y - 1},
+         {d = 1, x = pos.x + 1, y = pos.y},
+         {d = 2, x = pos.x, y = pos.y + 1},
+         {d = 3, x = pos.x - 1, y = pos.y},
+         {d = -1, x = pos.x, y = pos.y}}
+end
 
 function restore_map()
   for m in all(mset_restore) do
@@ -179,13 +187,37 @@ end
 function add_enemy1(m, x, y)
   actor_count += 1
   enemy_count += 1
-  a = {id = actor_count, pattern = "enemy1", facing = m[3], variant = level_enemy_variants[level][enemy_count], pos = {x = x, y = y}, life = 1, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}}
+  a = {id = actor_count, 
+       pattern = "enemy1",
+       facing = m[3],
+       variant = level_enemy_variants[level][enemy_count],
+       pos = {x = x, y = y},
+       life = 1,
+       death_frames = 0,
+       hurt_frames = 0,
+       attack_frames = 0,
+       blood_prints = 0,
+       stunned_turns = 0,
+       blast_pos = nil,
+       act = {a = 0x00, d = -1}}
   add(actors, a)
 end
 
 function add_player(m, x, y)
   actor_count += 1
-  a = {id = actor_count, pattern = "player", facing = m[3], pos = {x = x, y = y}, life = 3, max_life = 3, death_frames = 0, hurt_frames = 0, attack_frames = 0, blood_prints = 0, stunned_turns = 0, act = {a = 0x00, d = -1}}
+  a = {id = actor_count, 
+       pattern = "player", 
+       facing = m[3], 
+       pos = {x = x, y = y}, 
+       life = 12, 
+       max_life = 12, 
+       death_frames = 0, 
+       hurt_frames = 0, 
+       attack_frames = 0, 
+       blood_prints = 0, 
+       stunned_turns = 0, 
+       blast_pos = nil,
+       act = {a = 0x00, d = -1}}
   add(actors, a)
   player = a
 end
@@ -280,7 +312,7 @@ function do_enemy1_variant_movement_ai(actor, apos, mt)
 end
 
 function do_enemy1_ai(actor)
-  if (actor.life <= 0) then
+  if (actor.life <= 0 or actor.blast_pos != nil) then
     actor.act = {a = 0x00, d = -1}
     return
   end
@@ -384,21 +416,29 @@ function end_actors_turns()
   -- todo: dry
   -- perform all moves first so shots line up
   for actor in all(actors) do    
-    if (actor != player) then 
-      if (actor.blood_prints >= 1) redirect_existing_prints(actor, "blood_prints"); actor.blood_prints -= 1
-      if (is_snow(actor.pos)) redirect_existing_prints(actor, "snow_prints")
+    if (actor != player) then
+      if (actor.blast_pos == nil) then 
+        if (actor.blood_prints >= 1) redirect_existing_prints(actor, "blood_prints"); actor.blood_prints -= 1
+        if (is_snow(actor.pos)) redirect_existing_prints(actor, "snow_prints")
+      end
       perform_move(actor)
     end
   end
-
-  if (player.blood_prints >= 1) redirect_existing_prints(player, "blood_prints"); player.blood_prints -= 1
-  if (is_snow(player.pos)) redirect_existing_prints(player, "snow_prints")
+  if (player.blast_pos == nil) then 
+    if (player.blood_prints >= 1) redirect_existing_prints(player, "blood_prints"); player.blood_prints -= 1
+    if (is_snow(player.pos)) redirect_existing_prints(player, "snow_prints")
+  end
+  
   perform_move(player)
 
   -- perform the acts
   for actor in all(actors) do
-    perform_act(actor)    
+    if (actor.blast_pos == nil) then
+      perform_act(actor)      
+    end
+    
     actor.act = {a = 0x00, d = -1}
+    --actor.blast_pos = nil
   end
 end
 
@@ -408,6 +448,7 @@ function to_pos(dr)
 end
 
 function act_pos(actor)
+  if (actor.blast_pos != nil) return actor.blast_pos
   -- todo: different acts have different movements
   actor_point = {x = actor.pos.x, y = actor.pos.y}
   if (actor.act.d < 0) return actor_point
@@ -544,7 +585,9 @@ function place_new_prints(actor, pat)
 
   p = print_on_tile(actor)
   if (not p) then
-    o = { pattern = pat, facing = actor.act.d, pos = {x = actor.pos.x, y = actor.pos.y} }
+    d = actor.act.d
+    if (d == -1) d = actor.facing
+    o = { pattern = pat, facing = d, pos = {x = actor.pos.x, y = actor.pos.y} }
     add(prints, o)
   end
 end
@@ -628,8 +671,9 @@ function stun_actor(actor, turns)
   actor.stunned_turns = turns
 end
 
-function hurt_actor(actor)
-  if (actor.life > 0) actor.life -= 1
+function hurt_actor(actor, amount)
+  if (actor.life > 0) actor.life -= amount
+  if (actor.life < 0) actor.life = 0
   if (actor.life == 0) then 
     actor.life = -1
     actor.death_frames = 4
@@ -647,7 +691,6 @@ function attempt_action(player)
   end
 
   if (equipped == "c4") then
-    if (inventory["c4"] <= 0) return
     attempt_c4(player)
     return
   end
@@ -663,15 +706,41 @@ function c4s_for(actor)
   return cs
 end
 
-function blow_c4(c)
-  fts =   {{x = c.pos.x, y = c.pos.y - 1}, -- up
-           {x = c.pos.x + 1, y = c.pos.y}, -- right
-           {x = c.pos.x, y = c.pos.y + 1}, -- down
-           {x = c.pos.x - 1, y = c.pos.y}, -- left
-           {x = c.pos.x, y = c.pos.y}}     -- center
+function blast_actor(a, d)
+  if (d == -1) return
+  ts = collect_tile_line(a, d, false)
+  blast_to = ts[#ts]
+  for t in all(ts) do
+    for k, aa in pairs(actors) do
+      if (aa.id != a.id and aa.pos.x == t.x and aa.pos.y == t.y and aa.life > 0) then
+        stun_actor(aa, 2)
+        p = to_pos(d)
+        a.blast_pos = { x = aa.pos.x - p.x, y = aa.pos.y - p.y}
+        return
+      end
+    end
+  end
 
-  for t in all(fts) do
+  a.blast_pos = blast_to
+end
+
+function blow_c4(c, wait)
+  for t in all(cross_tiles(c.pos)) do
     add(explosions, {frames = 4, pos = {x = t.x, y = t.y}})
+
+    for a in all(actors) do
+      if (a.pos.x == t.x and a.pos.y == t.y) then
+        hurt_actor(a, 3)
+        blast_actor(a, t.d)
+      end
+    end
+
+    nt = lmapget(t.x, t.y) 
+    
+    if (nt == 69 or nt == 85) then -- broken walls
+      mset(t.x + levels[level][1], t.y + levels[level][2], 128)
+      add(mset_restore, {x = t.x, y = t.y, t = nt})
+    end
   end
 
   del(c4s, c)
@@ -680,11 +749,12 @@ end
 function attempt_c4(actor)
   if (actor.act.d == -1) then -- if there's no direction, blow up existing c4
     for c in all(c4s_for(actor)) do
-      blow_c4(c)
+      if (c.timer == -1) c.timer = 0
     end
   else -- if we're placing a c4, cool
+    if (inventory["c4"] <= 0) return
     d = to_pos(actor.act.d)
-    add(c4s, {owner = actor, pattern = "c4", pos = {x = actor.pos.x + d.x, y = actor.pos.y + d.y}})
+    add(c4s, {owner = actor, timer = -1, pattern = "c4", pos = {x = actor.pos.x + d.x, y = actor.pos.y + d.y}})
     inventory["c4"] -= 1
   end
 end
@@ -704,12 +774,12 @@ function attempt_shot(actor)
     for a in all(hurts) do
       if (l > 1) then
         if (a != player and a.life > 0) then
-          hurt_actor(a)
+          hurt_actor(a, 1)
           return
         end
       else
         if (l == 1) then
-          hurt_actor(a)
+          hurt_actor(a, 1)
           return
         end
       end
@@ -780,6 +850,12 @@ function start_turn()
   idle_start = nil
   turn_start = time()
   update_frame(turn_start)
+
+  for c in all(c4s) do
+    if (c.timer == 0) blow_c4(c)
+    if (c.timer > 0) c.timer -= 1
+  end
+  
   start_actors_turns()
 end
 
@@ -807,6 +883,7 @@ end
 
 function attempt_swap()
   -- todo: refactor
+  if (player.life <= 0) return
   player_action = {a = 0x00, d = -1}
   if (equipped == "c4" and inventory["socom"] > -1) equipped = "socom"; return
   if (equipped == "socom" and inventory["c4"] > -1) equipped = "c4"; return
@@ -827,7 +904,7 @@ function _update()
   d = input_direction()
   if (d > -1) player_action.d = d
   if (turn_start != nil) update_turn(); return
-  if ((player_action.d > -1 and d == -1) 
+  if ((player_action.d > -1 and d == -1 and player_action.a != 0x10)
     or (not btn(4) and player_action.a == 0x01)
     or (not (btn(4) or btn(5)) and player_action.a == 0x11)) then
     start_turn(); return
@@ -867,7 +944,11 @@ function sprite_for(actor)
     end
     
     return sprites[actor.pattern][5][4]
-  end  
+  end
+
+  if (actor.blast_pos != nil) then
+    return sprites[actor.pattern][actor.facing + 1][8]
+  end
 
   if (actor.hurt_frames > 0) then
     return sprites[actor.pattern][5][(2 - actor.hurt_frames) + 1]
@@ -876,6 +957,7 @@ function sprite_for(actor)
   if (actor.stunned_turns > 0) then
     return sprites[actor.pattern][7][(frame % 2) + 1]
   end
+
 
   if (actor.attack_frames > 0) then    
     return sprites[actor.pattern][6][actor.facing + 1]
@@ -1112,8 +1194,8 @@ function draw_ui()
   if (idle_start != nil and player_action.a == 0x11 and player_action.d > -1) spr(58 + player_action.d, 41, 3)
 
   -- draw health bar
-  rect(2,2,18,7,6)
-  rectfill(3,3,17,6,2)
+  rect(2,2,player.max_life * 5 + 3,7,6)
+  rectfill(3,3,player.max_life * 5 + 2,6,2)
   if (player.life > 0) rectfill(3,3,player.life * 5 + 2,6,3)
   print("life", 4, 6, 7)
 
@@ -1300,14 +1382,14 @@ __map__
 48465765566780665765507fbfbf65656565655084506565000000bfbfbfbfbfbfbfbfbf7f7f0000bfbfbfbfbfbfbfbfbfbf000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000484657656547bf476565507f7f7f00000000000000
 548066466780c0806646636141636141616161524452614a6500bfbfbf40614200406142bf0000bfbfbfbfbfbfbfbfbfbfbf0000004961616161416161614a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000054bf66464667926646466361417f00000000000000
 5401808480805380808a5887434301818080808a8380f0506500bf00bf508460617380636142bfbfbfbf406142634442406142000050808080e0718080805000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007601bfbf8492bf92bfbf5887500000000000000000
-758056465780f080564663617363615274808072616161730000bf00bf430180805088638050aeaebf4062c06073016362806042bf50805678808078578050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000075bf56464657bf5646466361730000000000000000
+758056465780f080564663617363615274808072616161730000bf00bf430180805088638050bfbfbf4062c06073016362806042bf5080567880807857e050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000075bf56464657bf5646466361730000000000000000
 6554676566578056674951545451545476d0808a8080f0500000bf00bf636142e071d07180636142bf5080808877807780808850bf508077c08080e07780500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000655467656547bf476549517f000000000000000000
-6565516565478a636162656565656565547080496161616200000000bfbfbf50808a8080e0588750bf50808880c0808080888050bf6374808001808080f05000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006565516565478a6361624f4f000000000000000000
-4f4f6061416174540000000000af6565655080506565000000000000bfbfbf738070807088636162bf5088808077807788808050bf50c0808080808080795142000000000000000000000000000000000000000000000000000000000000000000000000000000000000004f4f60614161745400000000000000000000000000
+6565516565478a636162656565656565547080496161616200000000bfbfbf50808a8080e0588750bf50808880c0808080888050bf6374c08080808080f05000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006565516565478a6361624f4f000000000000000000
+4f4f6061416174540000000000af6565655080506565000000000000bfbfbf738070807088636162bf5088808077807788808050bf50c0d08011808080795142000000000000000000000000000000000000000000000000000000000000000000000000000000000000004f4f60614161745400000000000000000000000000
 0000bf0000000000000000000000af656550885065bfbfbfbf00000000000050885080508050bebebf6042804051595142f04062bf508077d08080f07780504300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000406161614200000000000065606162af0000000000000000000050806361526162bebebebe6061625087506061620000508066788080786780636200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000000406152c080805161420000000000000000000000000000000000000060616200bfbfbfbfbfbfbfbfbfbf606162bfbfbf00005080808070d0808080506500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000500180888a88588743000000000000000000000000000000000000000000bfbfbfbf406142bfbfbfbf00000000bfbfbf0000638040615141787841486500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000500180888a88588743000000000000000000000000000000000000000000bfbfbfbf406142bfbfbfbf00000000bfbfbf0000638040455141787841486500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000006061418080f05161620000000000000000404461420000000000000000004061616173e06361615161614200000000000000508343f08643f08643875400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000606161616200000000000000000040622188604200000000000000005080808043834380808080f0500000bf00000000606151616151616151746500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000004061616161614200000000000050808080885000000000000000005088636151805161615180887300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
