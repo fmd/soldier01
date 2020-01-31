@@ -12,7 +12,7 @@ __lua__
 
 -- debug values to reset on release
 game_speed = 2
-starting_level = 9
+starting_level = 1
 inventory = { socom = 4,
               c4 = 2 }
 inventory_max = { socom = 4,
@@ -25,19 +25,23 @@ sprites = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/shoot
                       {33,34,35,34,37,38,39,36}, -- south (last three=roll/shoot/fly)
                       {49,50,51,50,53,54,55,52}, -- west (last three=roll/shoot/fly)
                       {8,9,10,11}, -- death
+                      {12, 13}, -- fall
                       {25, 24}}, -- laser
             enemy1 = {{208,209,210,209,210,211,211}, -- north (last two=roll/shoot)
                       {192,193,194,193,194,195,195}, -- east (last two=roll/shoot)
                       {224,225,226,225,226,227,227}, -- south (last two=roll/shoot)
                       {240,241,242,241,242,243,243}, -- west (last two=roll/shoot)
                       {196,197,198,199}, -- death
+                      {230, 231}, -- fall
                       {41, 40}, -- laser
                       {228, 229}, -- stunned
                       {212, 213, 214, 215}}, -- attack
+
             objects = {blood_prints = {26, 27, 28, 29},
                        snow_prints = {162, 163, 164, 165},
                        scanner = {131, 134},
                        multilock = {136, 137, 138},
+                       trapdoor = {176, 177},
                        multidoor = {{88, 144}, {89, 145}},
                        door = {{67, 129}, {68, 130}},
                        goal = {135},
@@ -55,20 +59,20 @@ enemy_variants = {enemy1 = {{"clockwise", {5, 5}}, -- variant 1
                             {"line", {5, 2}}, -- variant 2
                             {"still", {5, 13}} }}  -- variant 3
 
--- for converting a direction to a position change          
+-- for converting a direction to a position change
 pos_map = {{0,1,0,-1}, {-1,0,1,0}}
 
 -- level data
-levels = {{53,13,11,12}, {33,22,14,10}, {19,23,6,9}, {40,11,13,11}, {3, 25, 13, 7}, {3, 20, 9, 5}, {28,13,13,9}, {0,10,13,9}, {13,9,12,12}, {11,0,9,6}, {20,0,6,8}, {0,0,11,10}, {26,0,22,16}} -- xstart, ystart, w, h
-level_items = {{}, {}, {}, {}, {}, {}, {}, {}, {}, {"socom"}, {}, {"c4"}, {}}
-level_enemy_variants = {{1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3,3,3,3}, {2,2,2,2,2,2,2,2}, {2,1}, {1,2,1,1,2}, {2,2,1,2,1}, {1,1}, {2,2,2,2}, {1,2,1}, {2,1,2}, {2,2}, {2,2}, {1,1,1,1,2}, {2,2,2,2,2,2,2,2,2,2,2,2,2}}
+levels = {{96, 0, 8, 10}, {53,13,11,12}, {33,22,14,10}, {19,23,6,9}, {40,11,13,11}, {3, 25, 13, 7}, {3, 20, 9, 5}, {28,13,13,9}, {0,10,13,9}, {13,9,12,12}, {11,0,9,6}, {20,0,6,8}, {0,0,11,10}, {26,0,22,16}} -- xstart, ystart, w, h
+level_items = {{"socom"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {"socom"}, {}, {"c4"}, {}}
+level_enemy_variants = {{1,2,1}, {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3,3,3,3}, {2,2,2,2,2,2,2,2}, {2,1}, {1,2,1,1,2}, {2,2,1,2,1}, {1,1}, {2,2,2,2}, {1,2,1}, {2,1,2}, {2,2}, {2,2}, {1,1,1,1,2}, {2,2,2,2,2,2,2,2,2,2,2,2,2}}
 
 -- map runthrough replacements (sprite #, pattern, facing dir)
 -- note: facing dir for doors and other items with only 2 dirs is [0/1] rather than [0/1/2/3]
 map_replace = {{67,  "door", 0}, -- closed regular door
-               {68,  "door", 1}, 
+               {68,  "door", 1},
                {88,  "multidoor", 0}, -- closed multilock door
-               {89,  "multidoor", 1}, 
+               {89,  "multidoor", 1},
                {1,   "player",  1}, -- player
                {17,  "player", 0},
                {33,  "player", 2},
@@ -77,6 +81,8 @@ map_replace = {{67,  "door", 0}, -- closed regular door
                {208, "enemy1", 0},
                {224, "enemy1", 2},
                {240, "enemy1", 3},
+               {176, "trapdoor", no_floor = true},
+               {177, "trapdoor", no_floor = true},
                {131, "scanner", false}, -- sprite #, pattern, player_allowed (scanner)
                {134, "scanner", true},  -- sprite #, pattern, player_allowed (scanner)
                {136, "multilock", false}, -- sprite #, pattern, player_allowed (multilock)
@@ -110,16 +116,16 @@ function reset_level()
   frame = 1
   biframe = 1
   z_down = 0
-  x_down = 0  
+  x_down = 0
 end
 
-function init_level_from_map(lv)  
+function init_level_from_map(lv)
   actor_count = 0
   enemy_count = 0
   item_count = 0
 
   if (inventory["socom"] > -1) inventory["socom"] = 4
-  if (inventory["c4"] > -1) inventory["c4"] = 2  
+  if (inventory["c4"] > -1) inventory["c4"] = 2
 
   multilocks = {}
   multidoors = {}
@@ -127,6 +133,7 @@ function init_level_from_map(lv)
   scanners = {}
   relays = {}
   doors = {}
+  trapdoors = {}
   goals = {}
   items = {}
   prints = {}
@@ -138,7 +145,8 @@ function init_level_from_map(lv)
     for x = 0, levels[lv][3] - 1, 1 do
       for m in all(map_replace) do
         if (lmapget(x,y) == m[1]) then
-          mset(x + levels[lv][1], y + levels[lv][2], 128) -- 128 is empty tile
+          if (not m.no_floor) mset(x + levels[lv][1], y + levels[lv][2], 128) -- 128 is empty tile
+          if (m.no_floor) mset(x + levels[lv][1], y + levels[lv][2], 255) -- 128 is pure black
           add(mset_restore, {x = x, y = y, t = m[1]})
           if (m[2] == "door") add_door(m, x, y)
           if (m[2] == "multidoor") add_multidoor(m, x, y)
@@ -146,6 +154,7 @@ function init_level_from_map(lv)
           if (m[2] == "player") add_player(m, x, y)
           if (m[2] == "scanner") add_scanner(m, x, y)
           if (m[2] == "relay") add_relay(m, x, y)
+          if (m[2] == "trapdoor") add_trapdoor(m, x, y)
           if (m[2] == "goal") add_goal(m, x, y)
           if (m[2] == "item") add_item(m, x, y)
           if (m[2] == "multilock") add_multilock(m, x, y)
@@ -153,6 +162,10 @@ function init_level_from_map(lv)
       end
     end
   end
+end
+
+function add_trapdoor(m, x, y)
+  add(trapdoors, {pattern = "trapdoor", active = true, timer = 0, pos = {x = x, y = y}})
 end
 
 function add_multidoor(m, x, y)
@@ -187,13 +200,14 @@ end
 function add_enemy1(m, x, y)
   actor_count += 1
   enemy_count += 1
-  a = {id = actor_count, 
+  a = {id = actor_count,
        pattern = "enemy1",
        facing = m[3],
        variant = level_enemy_variants[level][enemy_count],
        pos = {x = x, y = y},
        life = 1,
        death_frames = 0,
+       fall_frames = 0,
        hurt_frames = 0,
        attack_frames = 0,
        blood_prints = 0,
@@ -205,17 +219,18 @@ end
 
 function add_player(m, x, y)
   actor_count += 1
-  a = {id = actor_count, 
-       pattern = "player", 
-       facing = m[3], 
-       pos = {x = x, y = y}, 
-       life = 12, 
-       max_life = 12, 
-       death_frames = 0, 
-       hurt_frames = 0, 
-       attack_frames = 0, 
-       blood_prints = 0, 
-       stunned_turns = 0, 
+  a = {id = actor_count,
+       pattern = "player",
+       facing = m[3],
+       pos = {x = x, y = y},
+       life = 3,
+       max_life = 3,
+       death_frames = 0,
+       fall_frames = 0,
+       hurt_frames = 0,
+       attack_frames = 0,
+       blood_prints = 0,
+       stunned_turns = 0,
        blast_pos = nil,
        act = {a = 0x00, d = -1}}
   add(actors, a)
@@ -229,10 +244,10 @@ end
 function load_level(lv)
   restore_map()
   level = lv
-  
+
   reset_level()
   init_level_from_map(lv)
-  
+
   player_action = {a = 0x00, d = -1}
   idle_start = time()
 end
@@ -283,10 +298,10 @@ end
 
 function do_enemy1_variant_movement_ai(actor, apos, mt)
   apos = act_pos(actor)
-  
+
   if (mt == "clockwise") then
     directions_tried = 0
-    while (apos.x == actor.pos.x and apos.y == actor.pos.y) do      
+    while (apos.x == actor.pos.x and apos.y == actor.pos.y) do
       actor.facing += 1
       if (actor.facing > 3) actor.facing = 4 - actor.facing
       actor.act.d = actor.facing
@@ -323,19 +338,19 @@ function do_enemy1_ai(actor)
     ha = has_live_actor(actor.pos, "")
     if (ha and ha.id != actor.id) actor.stunned_turns = 1; return
   end
-  
+
   -- if we find blood prints, follow. else, follow variant movement pattern
   movement_type = enemy_variants[actor.pattern][actor.variant][1]
   prev_facing = actor.facing
   actor.act.d = actor.facing
   printed = print_on_tile(actor)
   if (printed) then
-    if (actor.act.a == 0x00) actor.act.d = printed.facing    
+    if (actor.act.a == 0x00) actor.act.d = printed.facing
     -- if we go nowhere with the print facing, try new directions until we find a free direction (invoke variant-based ai pattern).
     do_enemy1_variant_movement_ai(actor, apos, movement_type)
-  else 
+  else
     tiles = collect_tile_line(actor, actor.act.d, false)
-    if (is_empty(tiles) or movement_type == "still") then      
+    if (is_empty(tiles) or movement_type == "still") then
       -- if we can go nowhere, invoke variant-based ai pattern
       do_enemy1_variant_movement_ai(actor, apos, movement_type)
     end
@@ -374,11 +389,11 @@ function do_avoidance(actor)
   if (new_actor_pos.x == actor.pos.x and new_actor_pos.y == actor.pos.y) then
     return
   end
-  
+
   for a in all(actors) do
     if (a.life > 0) then
       apos = act_pos(a)
-      
+
       -- todo: some enemy_variants should also dodge the player, so remove last clause for other ais
       if (a.id != actor.id and apos.x == new_actor_pos.x and apos.y == new_actor_pos.y and a.pattern != "player") then
         actor.act.d = -1
@@ -386,15 +401,15 @@ function do_avoidance(actor)
       end
     end
   end
-  
+
   return false
 end
 
-function start_actors_turns()  
-  for actor in all(actors) do    
+function start_actors_turns()
+  for actor in all(actors) do
     if (actor.pattern == "player") actor.act = {a=player_action.a, d=player_action.d}
     if (actor.pattern == "enemy1") do_enemy1_ai(actor)
-    if (actor.act.d > -1) actor.facing = actor.act.d    
+    if (actor.act.d > -1) actor.facing = actor.act.d
     pickup_prints(actor)
     if (actor.blood_prints >= 1) place_new_prints(actor, "blood_prints")
     if (is_snow(actor.pos)) place_new_prints(actor, "snow_prints")
@@ -415,30 +430,31 @@ function end_actors_turns()
   -- todo: different acts have different patterns
   -- todo: dry
   -- perform all moves first so shots line up
-  for actor in all(actors) do    
+  for actor in all(actors) do
+    -- todo: redirect to ai?
     if (actor != player) then
-      if (actor.blast_pos == nil) then 
+      if (actor.blast_pos == nil) then
         if (actor.blood_prints >= 1) redirect_existing_prints(actor, "blood_prints"); actor.blood_prints -= 1
         if (is_snow(actor.pos)) redirect_existing_prints(actor, "snow_prints")
       end
       perform_move(actor)
     end
   end
-  if (player.blast_pos == nil) then 
+  if (player.blast_pos == nil) then
     if (player.blood_prints >= 1) redirect_existing_prints(player, "blood_prints"); player.blood_prints -= 1
     if (is_snow(player.pos)) redirect_existing_prints(player, "snow_prints")
   end
-  
+
   perform_move(player)
 
   -- perform the acts
   for actor in all(actors) do
     if (actor.blast_pos == nil) then
-      perform_act(actor)      
+      perform_act(actor)
     end
-    
+
     actor.act = {a = 0x00, d = -1}
-    --actor.blast_pos = nil
+    actor.blast_pos = nil
   end
 end
 
@@ -452,7 +468,7 @@ function act_pos(actor)
   -- todo: different acts have different movements
   actor_point = {x = actor.pos.x, y = actor.pos.y}
   if (actor.act.d < 0) return actor_point
-  
+
   act_dir = to_pos(actor.act.d)
   test_point = {x = actor.pos.x + act_dir.x, y = actor.pos.y + act_dir.y}
   if (is_wall(test_point)) return actor_point
@@ -467,11 +483,11 @@ function lmapget(x, y)
 end
 
 function is_door_wall(ds, pos)
-  for o in all(ds) do 
+  for o in all(ds) do
     if (o.pos.x == pos.x and o.pos.y == pos.y) then
       if (o.open == 1) return false
       return true
-    end    
+    end
   end
 end
 
@@ -489,6 +505,8 @@ function is_glass(pos)
   m = lmapget(pos.x, pos.y)
   return (m == 119 or m == 120)
 end
+
+
 
 function open_doors_near(scans)
   for s in all(scans) do
@@ -541,7 +559,7 @@ function tick_closing_doors()
         apos = act_pos(a)
         if (apos.x == d.x and apos.y == d.y) in_space = true
       end
-      
+
       if (not in_space) d.open = 0
     end
   end
@@ -549,7 +567,7 @@ end
 
 function active_buttons(bts)
   rets = {}
-  
+
   for o in all(bts) do
     if (o.pattern == "scanner" or o.pattern == "multilock") then
       for a in all(actors) do
@@ -594,7 +612,7 @@ end
 
 function pickup_prints(actor)
   if (actor.life <= 0) return
-  
+
   for a in all(actors) do
     if (a.life <= 0 and actor.life > 0 and a.pos.x == actor.pos.x and a.pos.y == actor.pos.y) then
       actor.blood_prints = 5
@@ -614,7 +632,7 @@ function has_live_actor(np, exclude_pattern)
 end
 
 -- todo: make exclude_pattern better
-function will_have_actor(np, exclude_pattern)  
+function will_have_actor(np, exclude_pattern)
   for a in all(actors) do
     apos = act_pos(a)
     if (a.life > 0) then
@@ -628,18 +646,18 @@ end
 
 function attempt_melee(actor)
   attack_point = act_pos(actor)
-  
+
   h = has_live_actor(attack_point, "player")
-  
+
   if (h) then
     stun_actor(h, 3)
     return h
   end
-  
+
   return nil
 end
 
-function attempt_move(actor)  
+function attempt_move(actor)
   -- todo: characters other than player can melee
   if (actor.pattern == "player") attempt_melee(actor)
   actor.pos = act_pos(actor)
@@ -648,22 +666,22 @@ end
 function collect_tile_line(actor, d, ignore_glass)
   collected = {}
   if (not (d >= 0)) return collected
-  
+
   tx = actor.pos.x + to_pos(d).x
   ty = actor.pos.y + to_pos(d).y
-  
+
   i = 1
   p = {x = tx, y = ty}
   while not (is_wall(p) and (not is_glass(p) or not ignore_glass)) do
     collected[i] = p
     i+=1
-    
+
     tx += to_pos(d).x
     ty += to_pos(d).y
 
     p = {x = tx, y = ty}
   end
-  
+
   return collected
 end
 
@@ -671,10 +689,15 @@ function stun_actor(actor, turns)
   actor.stunned_turns = turns
 end
 
+function fall_actor(actor)
+  actor.life = -2
+  actor.fall_frames = 2
+end
+
 function hurt_actor(actor, amount)
   if (actor.life > 0) actor.life -= amount
   if (actor.life < 0) actor.life = 0
-  if (actor.life == 0) then 
+  if (actor.life == 0) then
     actor.life = -1
     actor.death_frames = 4
   else
@@ -708,20 +731,49 @@ end
 
 function blast_actor(a, d)
   if (d == -1) return
-  ts = collect_tile_line(a, d, false)
-  blast_to = ts[#ts]
-  for t in all(ts) do
-    for k, aa in pairs(actors) do
+
+  ts = collect_tile_line(a, d, true)
+  blast_index = 4
+  if (#ts < 4) then
+    blast_index = #ts
+  end
+
+  blast_to = ts[blast_index]
+
+  for k, t in pairs(ts) do
+    if (k > 4) break
+
+    for aa in all(actors) do
       if (aa.id != a.id and aa.pos.x == t.x and aa.pos.y == t.y and aa.life > 0) then
         stun_actor(aa, 2)
         p = to_pos(d)
-        a.blast_pos = { x = aa.pos.x - p.x, y = aa.pos.y - p.y}
+        a.blast_pos = { x = aa.pos.x - p.x, y = aa.pos.y - p.y }
         return
       end
     end
   end
 
+  hurt_actor(a, 1)
   a.blast_pos = blast_to
+end
+
+function trip_trapdoors()
+  for t in all(trapdoors) do
+    if (t.timer > 0) then
+      t.timer -=1
+      if (t.timer == 0) t.active = false
+    end
+
+    for a in all(actors) do
+      if (a.life > 0 and a.pos.x == t.pos.x and a.pos.y == t.pos.y) then
+        if (t.active) then
+          t.timer = 1
+        else
+          fall_actor(a)
+        end
+      end
+    end
+  end
 end
 
 function blow_c4(c, wait)
@@ -729,14 +781,14 @@ function blow_c4(c, wait)
     add(explosions, {frames = 4, pos = {x = t.x, y = t.y}})
 
     for a in all(actors) do
-      if (a.pos.x == t.x and a.pos.y == t.y) then
-        hurt_actor(a, 3)
+      if (a.pos.x == t.x and a.pos.y == t.y and a.life > -2) then -- > -2 because disappeared shouldnt blow
+        hurt_actor(a, 2)
         blast_actor(a, t.d)
       end
     end
 
-    nt = lmapget(t.x, t.y) 
-    
+    nt = lmapget(t.x, t.y)
+
     if (nt == 69 or nt == 85) then -- broken walls
       mset(t.x + levels[level][1], t.y + levels[level][2], 128)
       add(mset_restore, {x = t.x, y = t.y, t = nt})
@@ -747,25 +799,21 @@ function blow_c4(c, wait)
 end
 
 function attempt_c4(actor)
-  if (actor.act.d == -1) then -- if there's no direction, blow up existing c4
-    for c in all(c4s_for(actor)) do
-      if (c.timer == -1) c.timer = 0
-    end
-  else -- if we're placing a c4, cool
-    if (inventory["c4"] <= 0) return
-    d = to_pos(actor.act.d)
-    add(c4s, {owner = actor, timer = -1, pattern = "c4", pos = {x = actor.pos.x + d.x, y = actor.pos.y + d.y}})
-    inventory["c4"] -= 1
-  end
+  dir = actor.act.d
+  if (dir == -1) dir = actor.facing
+  if (inventory["c4"] <= 0) return
+  d = to_pos(dir)
+  add(c4s, {owner = actor, timer = 3, pattern = "c4", pos = {x = actor.pos.x + d.x, y = actor.pos.y + d.y}})
+  inventory["c4"] -= 1
 end
 
 function attempt_shot(actor)
   if (actor.id == player.id and player.act.d == -1) player.act.d = player.facing
   for i, tile in pairs(collect_tile_line(actor, actor.act.d, true)) do
     hurts = {}
-    
+
     for j, a in pairs(actors) do
-      if (actor != a and (a.pos.x == tile.x and a.pos.y == tile.y) and a.life > 0) then 
+      if (actor != a and (a.pos.x == tile.x and a.pos.y == tile.y) and a.life > 0) then
         add(hurts, a)
       end
     end
@@ -816,8 +864,9 @@ function check_goals()
   return false
 end
 
-function roll_frame() 
+function roll_frame()
   for actor in all(actors) do
+    if (actor.fall_frames > 0) actor.fall_frames -= 1
     if (actor.death_frames > 0) actor.death_frames -= 1
     if (actor.hurt_frames > 0) actor.hurt_frames -= 1
     if (actor.attack_frames > 0) actor.attack_frames -= 1
@@ -832,7 +881,7 @@ function update_frame(start)
   chunk = flr(((time() - start) * game_speed) * 100)
   frame = mid(1, flr(chunk / 25) + 1, 4)
   biframe = mid(1, flr(chunk / 12.5) + 1, 8)
-  
+
   if (frame != last_frame) then
     roll_frame()
   end
@@ -855,13 +904,14 @@ function start_turn()
     if (c.timer == 0) blow_c4(c)
     if (c.timer > 0) c.timer -= 1
   end
-  
+
   start_actors_turns()
 end
 
 function end_turn()
   end_actors_turns()
   tick_closing_doors()
+  trip_trapdoors()
   open_doors_near(active_buttons(scanners))
   switch_multilocks(active_buttons(multilocks))
   open_multilock_doors()
@@ -869,7 +919,7 @@ function end_turn()
   pick_up_items()
   prune_explosions()
   check_goals()
-  
+
   player_action = {a = 0x00, d = -1}
   turn_start = nil
   idle_start = time()
@@ -895,7 +945,7 @@ function update_turn()
 end
 
 function update_idle()
-  update_frame(idle_start) 
+  update_frame(idle_start)
   if (chunk >= 100) idle_start = time()
 end
 
@@ -913,7 +963,7 @@ function _update()
   if (player_action.a == 0x10 and not btn(5)) then
     attempt_swap()
   end
-  
+
   update_idle()
 end
 
@@ -941,13 +991,23 @@ function sprite_for(actor)
   if (actor.life <= 0) then
     if (actor.death_frames > 0) then
       return sprites[actor.pattern][5][(4 - actor.death_frames) + 1]
+    else
+      if (actor.fall_frames > 0) then
+        return sprites[actor.pattern][6][(2 - actor.fall_frames) + 1]
+      end
     end
-    
+
+    if (actor.life == -2) then -- disappeared
+      return 255
+    end
+
     return sprites[actor.pattern][5][4]
   end
 
   if (actor.blast_pos != nil) then
-    return sprites[actor.pattern][actor.facing + 1][8]
+    f = actor.facing + 1
+    if (f > 3) f = 0
+    return sprites[actor.pattern][f][7]
   end
 
   if (actor.hurt_frames > 0) then
@@ -955,20 +1015,21 @@ function sprite_for(actor)
   end
 
   if (actor.stunned_turns > 0) then
-    return sprites[actor.pattern][7][(frame % 2) + 1]
+    return sprites[actor.pattern][8][(frame % 2) + 1]
   end
 
-
-  if (actor.attack_frames > 0) then    
-    return sprites[actor.pattern][6][actor.facing + 1]
+  if (actor.attack_frames > 0) then
+    f = actor.facing + 1
+    if (f > 3) f = 0
+    return sprites[actor.pattern][7][f]
   end
-  
+
   if (turn_start != nil) then
     if (actor.act.a != 0x00 and (actor.id == player.id and equipped == "c4")) return sprites[actor.pattern][actor.facing+1][6]
     if (actor.act.a != 0x00 and (actor.id != player.id or equipped == "socom")) return sprites[actor.pattern][actor.facing+1][7]
     if (actor.act.d > -1) return sprites[actor.pattern][actor.facing+1][frame+1]
   end
-  
+
   if (actor.facing == -1) return sprites[actor.pattern][1][1]
   return sprites[actor.pattern][actor.facing+1][1]
 end
@@ -983,14 +1044,14 @@ end
 
 function draw_actors()
   -- draw dead and stunned enemy_variants first
-  for actor in all(actors) do    
+  for actor in all(actors) do
     if (actor.life <= 0 or actor.stunned_turns > 0) then
       if (actor.pattern != "player") then
         pal_swap(actor)
       end
     end
   end
-  
+
   for actor in all(actors) do
     if (actor.life > 0) then
       if (actor.pattern != "player") then
@@ -1011,7 +1072,7 @@ function draw_lasers()
       if (d == -1) d = actor.facing
       tiles = collect_tile_line(actor, d, true)
       for tile in all(tiles) do
-        if (actor != player or inventory["socom"] > -1 and equipped == "socom") spr(sprites[actor.pattern][6][actor.act.d % 2 + 1], tile.x*8, tile.y*8)
+        if (actor != player or inventory["socom"] > -1 and equipped == "socom") spr(sprites[actor.pattern][7][actor.act.d % 2 + 1], tile.x*8, tile.y*8)
       end
       -- if (actor == player and equipped == "socom" and inventory["socom"] > 1) then
       --   spr(46, tiles[1].x*8, tiles[1].y*8)
@@ -1047,11 +1108,7 @@ end
 function draw_c4_ui()
   if (idle_start != nil and player_action.a == 0x01 and equipped == "c4") then
     d = player_action.d
-    if (d == -1) then
-      fp = {x = player.pos.x, y = player.pos.y - 1}
-      spr(31, fp.x * 8, fp.y * 8)
-      return
-    end
+    if (d == -1) d = player.facing
     ap = to_pos(d)
     fp = {x = player.pos.x + ap.x, y = player.pos.y + ap.y}
     spr(43, fp.x * 8, fp.y * 8)
@@ -1069,7 +1126,15 @@ function draw_objects()
     if (o.player_allowed or is_scanner_active(o)) then
       spr(sprites["objects"][o.pattern][2], o.pos.x*8, o.pos.y*8)
     else
-      spr(sprites["objects"][o.pattern][1], o.pos.x*8, o.pos.y*8)    
+      spr(sprites["objects"][o.pattern][1], o.pos.x*8, o.pos.y*8)
+    end
+  end
+
+  for t in all(trapdoors) do
+    if (t.active) then
+      spr(sprites["objects"][t.pattern][1], t.pos.x*8, t.pos.y*8)
+    else
+      spr(sprites["objects"][t.pattern][2], t.pos.x*8, t.pos.y*8)
     end
   end
 
@@ -1087,7 +1152,7 @@ function draw_objects()
 
   for g in all(goals) do
     spr(sprites["objects"][g.pattern][1], g.pos.x*8, g.pos.y*8)
-  end  
+  end
 end
 
 function draw_above_prints_objects()
@@ -1126,7 +1191,7 @@ end
 
 function draw_prints()
   for o in all(prints) do
-    spr(sprites["objects"][o.pattern][o.facing + 1], o.pos.x*8, o.pos.y*8)    
+    spr(sprites["objects"][o.pattern][o.facing + 1], o.pos.x*8, o.pos.y*8)
   end
 end
 
@@ -1162,7 +1227,7 @@ function draw_c4_bullet(x,y,c)
   pset(x,y,c)
   pset(x,y+1,c)
   pset(x,y+3,c)
-  
+
   pset(x+1,y,c)
   pset(x+1,y+1,c)
   pset(x+1,y+3,c)
@@ -1204,7 +1269,7 @@ function draw_ui()
   if (equipped == "hands") draw_hands()
   if (equipped == "c4") draw_c4()
   if (player.blood_prints >= 1) draw_blood_ui()
-  
+
   -- nice little window border
   rect(0,0,127,127,5)
 end
@@ -1242,10 +1307,10 @@ __gfx__
 0000000000444400000000000104444000411110010444400000000004444000004444100e044400000e08000000000000000000000000000000000000000000
 00700700041111000044440004111110100f3f30041111100044440041111000041811408883114000808e800000000000000000000000000000000000000000
 0007700001f3f30004111100004f3f30151ffff0004f3f30041111001f3f3000043f3f000e8ef340100388140000000000000000000000000000000000000000
-0007700004ffff0001f3f300000ffff015111f1f000ffff001f3f3004fff55600888fff01888f440108e8f14000388e100000000000000000000000000000000
-0070070000111000041fff0000f11f0000000000001110f0044fff000111f5000081110005811480051ff34480e8838800000000000000000000000000000000
-000000000f555f0000111f0000155000000000000f0551000111f1f0055500000f0551008058000805111e801188ff8400000000000000000000000000000000
-000000000010100000f110000000010000000000001000000015111001010000000001000011000000f110e811f8844000000000000000000000000000000000
+0007700004ffff0001f3f300000ffff015111f1f000ffff001f3f3004fff55600888fff01888f440108e8f14000388e100444400000000000000000000000000
+0070070000111000041fff0000f11f0000000000001110f0044fff000111f5000081110005811480051ff34480e88388041f110f0000f0000000000000000000
+000000000f555f0000111f0000155000000000000f0551000111f1f0055500000f0551008058000805111e801188ff8401f1f301000010000000000000000000
+000000000010100000f110000000010000000000001000000015111001010000000001000011000000f110e811f8844004f1ff01000010000000000000000000
 000000000000000000000000000000000000000000000000000000000000500000000000000b0000008800000000000000000000000000000000000000000000
 000000000044400000000000004441000000000000041400000000000004440000000000000b0000008800000000000000800000000000000000000033000033
 000000000444440000044400044414001041440000444140004440000044444000000000000b0000008000000000088800880000000088800000000030000003
@@ -1326,14 +1391,14 @@ __gfx__
 0000000051000015677766776667767767667677766677770000003000080000615116170199a9100066666000066000006776000a7777a00065000500000050
 01000010110110117777667777777777776677777777777700000030000300007515611719aa9a9100000000000000000000600000aaaa000006650000005000
 01000010000000007777767677767776777777767776777600000000000000007716717601011010000000000000000000000000000000000000000055500000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+15555551155555510000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+51111115500000050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+51111115050550500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+51166115011111100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05555550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+51166115000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+51111115000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+15555551155555510000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000001008000000008000000000000000000000000000000000000000000000000000000000000000000000000000000
 00555500000000000005555005555000000555100e055500000e0800000000000022220000000000000000000000000000000000000000000000000000000000
 05555500005555000055555055555000005855508883115000808e80000000000222220000000000000000000000000000000000000000000000000000000000
@@ -1354,29 +1419,29 @@ __gfx__
 0055550000000000005555000055500000a90a0000a09a0000000000000000000000000000000000000000000000000000000000000000000000000000000000
 05555550005555000555555005555500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 05f3f3500555555005f3f350053f3500000f3550000f355000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00ffff0005f3f3500fffff00056ff10000fff55000fff55000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00111000001fff000011110000f11100051f3550051f355000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0f555f0000111f00001550f000555000151ff550151ff55000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0010100000f51000001000000010100011f0550011f0550000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00555500000000000555500000055550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00555550005555000555550000055555000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00ffff0005f3f3500fffff00056ff10000fff55000fff55000555500000000000000000000000000000000000000000000000000000000000000000000000000
+00111000001fff000011110000f11100051f3550051f3550055f550f00000f000000000000000000000000000000000000000000000000000000000000000000
+0f555f0000111f00001550f000555000151ff550151ff55005f5f305000005000000000000000000000000000000000000000000000000000000000000000000
+0010100000f51000001000000010100011f0550011f0550005f5ff05000005000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000111000000000000000000000000000000000000000000000000000000000000000000000000000
+0055550000000000055550000005555000000000000000000f555ff0000000000000000000000000000000000000000000000000000000000000000000000000
+00555550005555000555550000055555000000000000000000101000000000000000000000000000000000000000000000000000000000000000000000000000
 003f3f500055555003f3f5000003f3f5000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00ffff00003f3f500ffff0000655fff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0001110000fff10000f11f00005f1110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00f555f000f111000005510000005550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0001010000011f000010000000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __map__
-404442bf40616161616142406152416161616142636141616142bfbfbfbfbfbfbf7f7f7f7f7f7f7f7f7f7f7f7f7f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000408242bf4061616161614240615241616161614200
-5021636173c0808080e050430186438380f08350430181c080504961516146545446464646464646464646464657000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005021636173c0808080e050430186438380f0835000
-50864383508053535380505080806341616144516361738053505065476565769894970fbf98979894970f989747000000000000000000000000bfbf0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000508643835080535353805050808063416161445100
-508350804383808053805063616161738080f050636173d05350636151617498929296a70f999292939294929a47000000000000000046464646bfbf0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000508350804383808053805063616161738080f05000
-6344738050805380538050508780844383548550508750888050430181bfa69992929294978495968595939abf470000000000000000000000bfbfbf0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000634473805080538053805050878084438354855000
-5085508050d0808080f0506082616151616161626359738080506361516174989293929292949293949aa70000470000000000000000920000bf00bf00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005085508050d0808080f05060826161516161616200
-5080508643807083406162bfbfbf0fbf000000005084438680505065476576999abf999292929a009594970000636142000000000000000000bf00ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005080508343807083406162bfbfbfbfbf0000000000
-508643d06345514473bfbfbfbfbf0f000000000060615261616260465146466161740f99939a0f0099929294976887500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000508643d06345514473bfbfbfbfbfbf000000000000
-606152617384508750ffbfbf0000000000000000000000000000bfbf4798949497bfbfbf0fbfa7000f9993939a6361620000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000606152617384508750ffbfbf000000000000000000
-00000000606152616200bfbf000000000000bf40614200000000bfbf479993939abf000fa600000f0000000f00470000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000606152616200bfbf000000000000000000
+404442bf40616161616142406152416161616142636141616142bfbfbfbfbfbfbf7f7f7f7f7f7f7f7f7f7f7f7f7f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006565656565656565000000408242bf4061616161614240615241616161614200
+5021636173c0808080e050430186438380f08350430181c080504961516146545446464646464646464646464657000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000065564646464657651000005021636173c0808080e050430186438380f0835000
+50864383508053535380505080806341616144516361738053505065476565769894970fbf98979894970f9897470000005165656565564657656565656551000000000000000000000000000000000000000000000000000000000000000000654785c080844765000000508643835080535353805050808063416161445100
+508350804383808053805063616161738080f050636173d05350636151617498929296a70f999292939294929a4700000050464646546788664646464646500000000000000000000000000000000000000000000000000000000000000000006566465780566765000000508350804383808053805063616161738080f05000
+6344738050805380538050508780844383548550508750888050430181bfa69992929294978495968595939abf47000000604200c09894949494949497a65000000000000000000000000000000000000000000000000000000000000000000065656547b0476565000000634473805080538053805050878084438354855000
+5085508050d0808080f0506082616151616161626359738080506361516174989293929292949293949aa70000470000bfbf4301a6959292929292929af0580000000000000000000000000000000000000000000000000000000000000000004641617480724a650000005085508050d0808080f05060826161516161616200
+5080508643807083406162bfbfbf0fbf000000005084438680505065476576999abf999292929a00959497000063614200406200a79993939393939af0a65000000000000000000000000000000000000000000000000000000000000000000001818880e08863460000005080508343807083406162bfbfbfbfbf0000000000
+508643d06345514473bfbfbfbfbf0f000000000060615261616260465146466161740f99939a0f009992929497688750005046464654464657885646464650000000000000000000000000000000000000000000000000000000000000000000465080b080805887000000508643d06345514473bfbfbfbfbfbf000000000000
+606152617384508750ffbfbf0000000000000000000000000000bfbf4798949497bfbfbf0fbfa7000f9993939a636162005165656565656566466765656551000000000000000000000000000000000000000000000000000000000000000000655088c080885046000000606152617384508750ffbfbf000000000000000000
+00000000606152616200bfbf000000000000bf40614200000000bfbf479993939abf000fa600000f0000000f00470000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000656061616161626500000000000000606152616200bfbf000000000000000000
 4f63615254526161516565bf0000bfbfbfbf65508743000000000000664646464646464646464646464646464667000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004f63615254526161516565bf000000000000000000
 4048656565478a47656563bfbfbfbfbfbf65655159730000000000007f7f7f7f7f7f7f7f7f7f7f7fbfbfbfbfbfbfbfbfbfbf0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004048656565478a47656563bf000000000000000000
 48465765566780665765507fbfbf65656565655084506565000000bfbfbfbfbfbfbfbfbf7f7f0000bfbfbfbfbfbfbfbfbfbf000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000484657656547bf476565507f7f7f00000000000000
@@ -1406,4 +1471,3 @@ __sfx__
 011000000e7500e7500e7500e7500000016750000001575013750117501075011750137500e750000000d7500d750000000e7500e75010750107500e7500e750000000d7500d7500000000000000000000000000
 __music__
 00 01424344
-
