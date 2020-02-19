@@ -1,23 +1,35 @@
 pico-8 cartridge // http://www.pico-8.com
 version 16
 __lua__
+-- --- new todo --- --
+-- allow input to be pressed to switch between action and movement
+-- fix idle time animations (frames are not regular)
+-- fix restart keeping level items
 -- --- iffy/general todo --- --
 -- todo: introduce blood footprint mechanic with some levels
 -- todo: finish c4 placement
 -- --- refactor todo --- --
 -- todo: convert coord system to strings
 -- todo: convert animation data to strings
--- todo: refactor entire input system
--- todo: refactor c4 timer
 
 -- debug values to reset on release
-game_speed = 2
+game_speed = 3
+turn_break = 0.6 -- time in seconds to break between turns
 starting_level = 1
-inventory = { socom = 4,
-              c4 = 2 }
+input_queue = {}
+inventory = { socom = -1,
+              c4 = -1,
+              gloves = -1 }
+
 inventory_max = { socom = 4,
-                  c4 = 2 }
-equipped = "c4"
+                  c4 = 2,
+                  gloves = 0}
+
+prev_inventory = { socom = -1,
+                   c4 = -1,
+                   gloves = -1 }
+equipped = ""
+prev_equipped = ""
 
 -- load the sprites and that
 sprites = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/shoot/fly)
@@ -27,10 +39,10 @@ sprites = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/shoot
                       {8,9,10,11}, -- death
                       {12, 13}, -- fall
                       {25, 24}}, -- laser
-            enemy1 = {{208,209,210,209,210,211,211}, -- north (last two=roll/shoot)
-                      {192,193,194,193,194,195,195}, -- east (last two=roll/shoot)
-                      {224,225,226,225,226,227,227}, -- south (last two=roll/shoot)
-                      {240,241,242,241,242,243,243}, -- west (last two=roll/shoot)
+            enemy1 = {{208,209,210,209,210,211,211,1}, -- north (last two=roll/shoot/fly)
+                      {192,193,194,193,194,195,195,1}, -- east (last two=roll/shoot/fly)
+                      {224,225,226,225,226,227,227,1}, -- south (last two=roll/shoot/fly)
+                      {240,241,242,241,242,243,243,1}, -- west (last two=roll/shoot/fly)
                       {196,197,198,199}, -- death
                       {230, 231}, -- fall
                       {41, 40}, -- laser
@@ -45,9 +57,11 @@ sprites = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/shoot
                        multidoor = {{88, 144}, {89, 145}},
                        door = {{67, 129}, {68, 130}},
                        goal = {135},
-                       relay = {132}},
+                       relay = {132},
+                       ration = {180}},
             items   = {socom = 133,
-                       c4 = 133},
+                       c4 = 183,
+                       gloves = 184},
             effects = {explosion = {172, 173, 174, 175}} }
 
 -- we use mset to replace the map while it's in play, so,
@@ -63,9 +77,9 @@ enemy_variants = {enemy1 = {{"clockwise", {5, 5}}, -- variant 1
 pos_map = {{0,1,0,-1}, {-1,0,1,0}}
 
 -- level data
-levels = {{96, 0, 8, 10}, {53,13,11,12}, {33,22,14,10}, {19,23,6,9}, {40,11,13,11}, {3, 25, 13, 7}, {3, 20, 9, 5}, {28,13,13,9}, {0,10,13,9}, {13,9,12,12}, {11,0,9,6}, {20,0,6,8}, {0,0,11,10}, {26,0,22,16}} -- xstart, ystart, w, h
-level_items = {{"socom"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {"socom"}, {}, {"c4"}, {}}
-level_enemy_variants = {{1,2,1}, {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3,3,3,3}, {2,2,2,2,2,2,2,2}, {2,1}, {1,2,1,1,2}, {2,2,1,2,1}, {1,1}, {2,2,2,2}, {1,2,1}, {2,1,2}, {2,2}, {2,2}, {1,1,1,1,2}, {2,2,2,2,2,2,2,2,2,2,2,2,2}}
+levels = {{0, 0, 32, 32}} -- xstart, ystart, w, h
+level_items = {{"gloves"}}
+level_enemy_variants = {{2,3,2,3,2,1,3,3,1,1}}
 
 -- map runthrough replacements (sprite #, pattern, facing dir)
 -- note: facing dir for doors and other items with only 2 dirs is [0/1] rather than [0/1/2/3]
@@ -89,7 +103,8 @@ map_replace = {{67,  "door", 0}, -- closed regular door
                {138, "multilock", true}, -- sprite #, pattern, player_allowed (multilock)
                {132, "relay"}, -- relays have no extra attribs yet
                {135, "goal"},  -- goals have no extra attribs yet
-               {133, "item"}} -- the item type is taken from the level_items variable
+               {133, "item"},  -- the item type is taken from the level_items variable
+               {180, "ration"}}
 
 function cross_tiles(pos)
   return {{d = 0, x = pos.x, y = pos.y - 1},
@@ -116,7 +131,13 @@ function reset_level()
   frame = 1
   biframe = 1
   z_down = 0
+  input_act = 0x00
+  input_dir = -1
   x_down = 0
+  dir_down = -1
+  restart_time = 0
+  played_cancel = false
+  taking_input = false
 end
 
 function init_level_from_map(lv)
@@ -124,8 +145,8 @@ function init_level_from_map(lv)
   enemy_count = 0
   item_count = 0
 
-  if (inventory["socom"] > -1) inventory["socom"] = 4
-  if (inventory["c4"] > -1) inventory["c4"] = 2
+  inventory = prev_inventory
+  equipped = prev_equipped
 
   multilocks = {}
   multidoors = {}
@@ -140,6 +161,7 @@ function init_level_from_map(lv)
   c4s = {}
   explosions = {}
   fires = {}
+  rations = {}
 
   for y = 0, levels[lv][4] - 1, 1 do
     for x = 0, levels[lv][3] - 1, 1 do
@@ -158,6 +180,7 @@ function init_level_from_map(lv)
           if (m[2] == "goal") add_goal(m, x, y)
           if (m[2] == "item") add_item(m, x, y)
           if (m[2] == "multilock") add_multilock(m, x, y)
+          if (m[2] == "ration") add_ration(m, x, y)
         end
       end
     end
@@ -165,7 +188,9 @@ function init_level_from_map(lv)
 end
 
 function add_trapdoor(m, x, y)
-  add(trapdoors, {pattern = "trapdoor", active = true, timer = 0, pos = {x = x, y = y}})
+  active_door = true
+  if (m[1] == 177) active_door = false
+  add(trapdoors, {pattern = "trapdoor", active = active_door, timer = 0, pos = {x = x, y = y}})
 end
 
 function add_multidoor(m, x, y)
@@ -174,6 +199,10 @@ end
 
 function add_multilock(m, x, y)
   add(multilocks, {pattern = "multilock", pos = {x = x, y = y}, active = false, player_allowed = m[3]})
+end
+
+function add_ration(m, x, y)
+  add(rations, {pattern = "ration", pos = {x = x, y = y}})
 end
 
 function add_item(m, x, y)
@@ -190,11 +219,11 @@ function add_relay(m, x, y)
 end
 
 function add_scanner(m, x, y)
-  add(scanners, {pattern = "scanner", pos = {x = x, y = y}, player_allowed = m[3]})
+  add(scanners, {pattern = "scanner", pos = {x = x, y = y}, unlocked = false, player_allowed = m[3]})
 end
 
 function add_door(m, x, y)
-  add(doors, {pattern = "door", facing = m[3], open = 0, open_turns = 0, pos = {x = x, y = y}})
+  add(doors, {pattern = "door", facing = m[3], open = 0, pos = {x = x, y = y}})
 end
 
 function add_enemy1(m, x, y)
@@ -225,6 +254,8 @@ function add_player(m, x, y)
        pos = {x = x, y = y},
        life = 3,
        max_life = 3,
+       o2 = 3,
+       max_o2 = 3,
        death_frames = 0,
        fall_frames = 0,
        hurt_frames = 0,
@@ -249,33 +280,8 @@ function load_level(lv)
   init_level_from_map(lv)
 
   player_action = {a = 0x00, d = -1}
+  temp_action = nil
   idle_start = time()
-end
-
-function input_direction()
-  d = -1
-  if (btn(0)) d = 3
-  if (btn(1)) d = 1
-  if (btn(2)) d = 0
-  if (btn(3)) d = 2
-  return d
-end
-
-function input_action()
-  a = player_action.a
-  if (btn(4)) then
-    if (z_down == 0) a = bxor(a,0x01)
-    z_down = 1
-  else
-    z_down = 0
-  end
-  if (btn(5)) then
-    if (x_down == 0) a = bxor(a,0x10)
-    x_down = 1
-  else
-    x_down = 0
-  end
-  return a
 end
 
 function is_empty(t)
@@ -288,7 +294,7 @@ end
 function print_on_tile(actor)
   p = nil
   for o in all(prints) do
-    if ((o.pattern == "blood_prints" or o.pattern == "snow_prints") and o.pos.x == actor.pos.x and o.pos.y == actor.pos.y) then
+    if ((o.pattern == "blood_prints" or o.pattern == "snow_prints") and cmp_pos(o.pos, actor.pos)) then
       p = o
       break
     end
@@ -301,7 +307,7 @@ function do_enemy1_variant_movement_ai(actor, apos, mt)
 
   if (mt == "clockwise") then
     directions_tried = 0
-    while (apos.x == actor.pos.x and apos.y == actor.pos.y) do
+    while cmp_pos(apos, actor.pos) do
       actor.facing += 1
       if (actor.facing > 3) actor.facing = 4 - actor.facing
       actor.act.d = actor.facing
@@ -312,7 +318,7 @@ function do_enemy1_variant_movement_ai(actor, apos, mt)
   end
 
   if (mt == "line") then
-    if (apos.x == actor.pos.x and apos.y == actor.pos.y) do
+    if (cmp_pos(apos, actor.pos)) do
       actor.facing += 2
       if (actor.facing > 3) actor.facing = abs(4 - actor.facing)
       actor.act.d = actor.facing
@@ -320,7 +326,7 @@ function do_enemy1_variant_movement_ai(actor, apos, mt)
   end
 
   if (mt == "still") then
-    actor.act.d = -1
+    actor.act.d = actor.facing
   end
 
   return
@@ -358,10 +364,10 @@ function do_enemy1_ai(actor)
 
   found_player = false
   -- with old facing, look for player to shoot
-  tiles = collect_tile_line(actor, prev_facing, false)
+  tiles = collect_tile_line(actor, prev_facing, true)
   if (not is_empty(tiles)) then
     for k, tile in pairs(tiles) do
-      if (player.pos.x == tile.x and player.pos.y == tile.y) then
+      if (cmp_pos(player.pos, tile) and player.life > 0) then
         -- restore old facing on player found (todo: improve).
         actor.act.a = 0x01
         actor.act.d = prev_facing
@@ -375,7 +381,7 @@ function do_enemy1_ai(actor)
     tiles = collect_tile_line(actor, actor.act.d, true)
     if (not is_empty(tiles)) then
       for k, tile in pairs(tiles) do
-        if (player.pos.x == tile.x and player.pos.y == tile.y) actor.act.a = 0x01
+        if (cmp_pos(player.pos, tile) and player.life > 0) actor.act.a = 0x01
       end
     end
   end
@@ -386,7 +392,7 @@ function do_avoidance(actor)
   -- if we are moving into a tile that someone else plans on moving into, only one should move there.
   new_actor_pos = act_pos(actor)
   -- if we arent moving, no need to avoid
-  if (new_actor_pos.x == actor.pos.x and new_actor_pos.y == actor.pos.y) then
+  if (cmp_pos(new_actor_pos, actor.pos)) then
     return
   end
 
@@ -395,7 +401,7 @@ function do_avoidance(actor)
       apos = act_pos(a)
 
       -- todo: some enemy_variants should also dodge the player, so remove last clause for other ais
-      if (a.id != actor.id and apos.x == new_actor_pos.x and apos.y == new_actor_pos.y and a.pattern != "player") then
+      if (a.id != actor.id and cmp_pos(apos, new_actor_pos) and a.pattern != "player") then
         actor.act.d = -1
         return true -- return true if avoidance was done. if so, all actors need to redo avoidance.
       end
@@ -407,12 +413,17 @@ end
 
 function start_actors_turns()
   for actor in all(actors) do
-    if (actor.pattern == "player") actor.act = {a=player_action.a, d=player_action.d}
-    if (actor.pattern == "enemy1") do_enemy1_ai(actor)
-    if (actor.act.d > -1) actor.facing = actor.act.d
-    pickup_prints(actor)
-    if (actor.blood_prints >= 1) place_new_prints(actor, "blood_prints")
-    if (is_snow(actor.pos)) place_new_prints(actor, "snow_prints")
+      if (actor.pattern == "player") actor.act = {a=player_action.a, d=player_action.d}
+      if (actor.pattern == "enemy1") do_enemy1_ai(actor)
+      if (actor.act.d > -1) then
+        actor.facing = actor.act.d
+      end
+    if (actor.blast_pos == nil) then
+      pickup_prints(actor)
+      if (actor.act.a == 0x01) sfx(10)
+      if (actor.blood_prints >= 1) place_new_prints(actor, "blood_prints")
+      if (is_snow(actor.pos)) place_new_prints(actor, "snow_prints")
+    end
   end
   avoid = true
 
@@ -439,13 +450,31 @@ function end_actors_turns()
       end
       perform_move(actor)
     end
+
+    if (actor == player) then
+      if (is_water(act_pos(actor)) and is_water(actor.pos)) then
+        if (player.o2 <= 0 and player.life >= 0) hurt_actor(player, 1)
+        player.o2 -= 1
+      else
+        player.o2 = player.max_o2
+      end
+    end
   end
+
   if (player.blast_pos == nil) then
     if (player.blood_prints >= 1) redirect_existing_prints(player, "blood_prints"); player.blood_prints -= 1
     if (is_snow(player.pos)) redirect_existing_prints(player, "snow_prints")
   end
 
   perform_move(player)
+
+  -- pick up rations
+  for r in all(rations) do
+    if (cmp_pos(player.pos, r.pos) and player.life > 0) then
+      player.life = player.max_life
+      del(rations, r)
+    end
+  end
 
   -- perform the acts
   for actor in all(actors) do
@@ -465,15 +494,24 @@ end
 
 function act_pos(actor)
   if (actor.blast_pos != nil) return actor.blast_pos
+
   -- todo: different acts have different movements
   actor_point = {x = actor.pos.x, y = actor.pos.y}
   if (actor.act.d < 0) return actor_point
 
   act_dir = to_pos(actor.act.d)
   test_point = {x = actor.pos.x + act_dir.x, y = actor.pos.y + act_dir.y}
+
+  -- gloves function
+  if (actor == player and equipped == "gloves" and actor.act.a == 0x01 and is_vault_gate(test_point)) then
+    new_point = {x = test_point.x + act_dir.x, y = test_point.y + act_dir.y}
+    if (is_wall(new_point)) return actor_point
+    return new_point
+  end
+
   if (is_wall(test_point)) return actor_point
 
-  -- todo: other future moves may do not move the player. consider refactoring all actions.
+  -- todo: other future moves may not move the player. consider refactoring all actions.
   if (actor.act.a != 0x00) return actor_point
   return test_point
 end
@@ -484,7 +522,7 @@ end
 
 function is_door_wall(ds, pos)
   for o in all(ds) do
-    if (o.pos.x == pos.x and o.pos.y == pos.y) then
+    if (cmp_pos(o.pos, pos)) then
       if (o.open == 1) return false
       return true
     end
@@ -501,22 +539,32 @@ function is_wall(pos)
   return is_door_wall(doors, pos) or is_door_wall(multidoors, pos) or (m >= 64 and m <= 127)
 end
 
+function is_vault_gate(pos)
+  m = lmapget(pos.x, pos.y)
+  return (m == 70 or m == 71)
+end
+
 function is_glass(pos)
   m = lmapget(pos.x, pos.y)
   return (m == 119 or m == 120)
 end
 
+function is_water(pos)
+  m = lmapget(pos.x, pos.y)
+  return (m == 182)
+end
 
 
 function open_doors_near(scans)
   for s in all(scans) do
+    s.unlocked = true
+
     for d in all(doors) do
       if ((d.pos.x == s.pos.x + 1 and d.pos.y == s.pos.y) or
           (d.pos.x == s.pos.x - 1 and d.pos.y == s.pos.y) or
           (d.pos.x == s.pos.x and d.pos.y == s.pos.y + 1) or
           (d.pos.x == s.pos.x and d.pos.y == s.pos.y - 1)) then
         d.open = 1
-        d.open_turns = 5
       end
     end
   end
@@ -549,22 +597,6 @@ function close_multilock_doors()
   end
 end
 
-function tick_closing_doors()
-  for d in all(doors) do
-    if (d.open_turns > 0) then
-      d.open_turns -= 1
-    else
-      in_space = false
-      for a in all(actors) do
-        apos = act_pos(a)
-        if (apos.x == d.x and apos.y == d.y) in_space = true
-      end
-
-      if (not in_space) d.open = 0
-    end
-  end
-end
-
 function active_buttons(bts)
   rets = {}
 
@@ -572,23 +604,13 @@ function active_buttons(bts)
     if (o.pattern == "scanner" or o.pattern == "multilock") then
       for a in all(actors) do
         if (a.pattern != "player" or o.player_allowed) then
-          if (a.pos.x == o.pos.x and a.pos.y == o.pos.y and a.life > 0) add(rets, o)
+          if (cmp_pos(a.pos, o.pos) and a.life > 0) add(rets, o)
         end
       end
     end
   end
 
   return rets
-end
-
-function is_scanner_active(scan)
-  for a in all(actors) do
-    if (a.pattern != "player" or scan.player_allowed) then
-      if (a.pos.x == scan.pos.x and a.pos.y == scan.pos.y) return true
-    end
-  end
-
-  return false
 end
 
 function redirect_existing_prints(actor, pat)
@@ -600,6 +622,10 @@ end
 
 function place_new_prints(actor, pat)
   if (actor.life <= 0) return
+  if (is_water(actor.pos)) return
+  for t in all(trapdoors) do
+    if (cmp_pos(actor.pos, t.pos)) return
+  end
 
   p = print_on_tile(actor)
   if (not p) then
@@ -614,7 +640,7 @@ function pickup_prints(actor)
   if (actor.life <= 0) return
 
   for a in all(actors) do
-    if (a.life <= 0 and actor.life > 0 and a.pos.x == actor.pos.x and a.pos.y == actor.pos.y) then
+    if (a.life <= 0 and actor.life > 0 and cmp_pos(a.pos, actor.pos)) then
       actor.blood_prints = 5
     end
   end
@@ -623,20 +649,7 @@ end
 function has_live_actor(np, exclude_pattern)
   for a in all(actors) do
     if (a.life > 0) then
-      if (a.pattern != exclude_pattern and a.pos.x == np.x and a.pos.y == np.y) then
-        return a
-      end
-    end
-  end
-  return false
-end
-
--- todo: make exclude_pattern better
-function will_have_actor(np, exclude_pattern)
-  for a in all(actors) do
-    apos = act_pos(a)
-    if (a.life > 0) then
-      if (a.pattern != exclude_pattern and apos.x == np.x and apos.y == np.y) then
+      if (a.pattern != exclude_pattern and cmp_pos(a.pos, np)) then
         return a
       end
     end
@@ -659,7 +672,8 @@ end
 
 function attempt_move(actor)
   -- todo: characters other than player can melee
-  if (actor.pattern == "player") attempt_melee(actor)
+
+  if (actor.pattern == "player" and player.life > 0) attempt_melee(actor)
   actor.pos = act_pos(actor)
 end
 
@@ -698,10 +712,12 @@ function hurt_actor(actor, amount)
   if (actor.life > 0) actor.life -= amount
   if (actor.life < 0) actor.life = 0
   if (actor.life == 0) then
+    sfx(5)
     actor.life = -1
-    actor.death_frames = 4
+    if (not is_water(actor.pos)) actor.death_frames = 4
   else
-    actor.hurt_frames = 2
+    sfx(5, -1, 1, 3)
+    if (not is_water(actor.pos)) actor.hurt_frames = 2
   end
 end
 
@@ -741,13 +757,13 @@ function blast_actor(a, d)
   blast_to = ts[blast_index]
 
   for k, t in pairs(ts) do
-    if (k > 4) break
+    if (k > blast_index) break
+    break_glass(t)
 
     for aa in all(actors) do
-      if (aa.id != a.id and aa.pos.x == t.x and aa.pos.y == t.y and aa.life > 0) then
+      if (aa != player and aa.id != a.id and cmp_pos(aa.pos, t) and aa.life > 0) then
         stun_actor(aa, 2)
-        p = to_pos(d)
-        a.blast_pos = { x = aa.pos.x - p.x, y = aa.pos.y - p.y }
+        a.blast_pos = aa.pos
         return
       end
     end
@@ -755,6 +771,11 @@ function blast_actor(a, d)
 
   hurt_actor(a, 1)
   a.blast_pos = blast_to
+end
+
+function cmp_pos(a, b)
+  if (a.x == b.x and a.y == b.y) return true
+  return false
 end
 
 function trip_trapdoors()
@@ -765,7 +786,7 @@ function trip_trapdoors()
     end
 
     for a in all(actors) do
-      if (a.life > 0 and a.pos.x == t.pos.x and a.pos.y == t.pos.y) then
+      if (a.life > 0 and cmp_pos(a.pos, t.pos)) then
         if (t.active) then
           t.timer = 1
         else
@@ -777,25 +798,39 @@ function trip_trapdoors()
 end
 
 function blow_c4(c, wait)
+  sfx(7)
+
   for t in all(cross_tiles(c.pos)) do
     add(explosions, {frames = 4, pos = {x = t.x, y = t.y}})
 
     for a in all(actors) do
-      if (a.pos.x == t.x and a.pos.y == t.y and a.life > -2) then -- > -2 because disappeared shouldnt blow
+      if (cmp_pos(a.pos, t) and a.life > -2) then -- > -2 because disappeared shouldnt blow
         hurt_actor(a, 2)
         blast_actor(a, t.d)
       end
     end
 
-    nt = lmapget(t.x, t.y)
-
-    if (nt == 69 or nt == 85) then -- broken walls
-      mset(t.x + levels[level][1], t.y + levels[level][2], 128)
-      add(mset_restore, {x = t.x, y = t.y, t = nt})
-    end
+    break_glass(t)
+    break_wall(t)
   end
 
   del(c4s, c)
+end
+
+function break_wall(pos)
+  nt = lmapget(pos.x, pos.y)
+  if (nt == 69 or nt == 85) swap_restore(pos, nt, 128)
+end
+
+function break_glass(pos)
+  nt = lmapget(pos.x, pos.y)
+  if (nt == 119) swap_restore(pos, nt, 178)
+  if (nt == 120) swap_restore(pos, nt, 179)
+end
+
+function swap_restore(pos, a, b)
+  mset(pos.x + levels[level][1], pos.y + levels[level][2], b)
+  add(mset_restore, {x = pos.x, y = pos.y, t = a})
 end
 
 function attempt_c4(actor)
@@ -809,11 +844,14 @@ end
 
 function attempt_shot(actor)
   if (actor.id == player.id and player.act.d == -1) player.act.d = player.facing
+
+  sfx(4)
+
   for i, tile in pairs(collect_tile_line(actor, actor.act.d, true)) do
     hurts = {}
 
     for j, a in pairs(actors) do
-      if (actor != a and (a.pos.x == tile.x and a.pos.y == tile.y) and a.life > 0) then
+      if (actor != a and cmp_pos(a.pos, tile) and a.life > 0) then
         add(hurts, a)
       end
     end
@@ -836,15 +874,15 @@ function attempt_shot(actor)
 end
 
 function perform_move(actor)
-  if (actor.act.a == 0x00 or (actor.id == player.id and equipped == "hands")) attempt_move(actor)
+  if (actor.act.a == 0x00 or (equipped == "gloves" and actor == player and actor.act.a == 0x01)) then
+    attempt_move(actor)
+  end
 end
 
 function perform_act(actor)
   if (actor.act.a == 0x01) then
     if (actor.id == player.id) then
-      if (equipped != "hands") then
-        attempt_action(actor)
-      end
+      attempt_action(actor)
     else
       attempt_shot(actor)
     end
@@ -854,7 +892,7 @@ end
 function check_goals()
   for g in all(goals) do
     for a in all(actors) do
-      if (a.pos.x == g.pos.x and a.pos.y == g.pos.y and a.life > 0 and a.pattern == "player") then
+      if (cmp_pos(a.pos, g.pos) and a.life > 0 and a.pattern == "player") then
         load_level(level + 1)
         return true
       end
@@ -882,18 +920,14 @@ function update_frame(start)
   frame = mid(1, flr(chunk / 25) + 1, 4)
   biframe = mid(1, flr(chunk / 12.5) + 1, 8)
 
-  if (frame != last_frame) then
+  -- chunk > 25 ensures every frame gets a fair shake; extends animations into idle time.
+  if (frame != last_frame and chunk > 25) then
     roll_frame()
+    last_frame = frame
   end
-  last_frame = frame
 end
 
 function start_turn()
-  if (player_action.a == 0x11 or player.life <= 0) then
-    load_level(level)
-    return
-  end
-
   turn += 1
 
   idle_start = nil
@@ -902,7 +936,10 @@ function start_turn()
 
   for c in all(c4s) do
     if (c.timer == 0) blow_c4(c)
-    if (c.timer > 0) c.timer -= 1
+    if (c.timer > 0) then
+      sfx(6)
+      c.timer -= 1
+    end
   end
 
   start_actors_turns()
@@ -910,13 +947,12 @@ end
 
 function end_turn()
   end_actors_turns()
-  tick_closing_doors()
+  pick_up_items()
   trip_trapdoors()
   open_doors_near(active_buttons(scanners))
   switch_multilocks(active_buttons(multilocks))
   open_multilock_doors()
   close_multilock_doors()
-  pick_up_items()
   prune_explosions()
   check_goals()
 
@@ -934,42 +970,105 @@ end
 function attempt_swap()
   -- todo: refactor
   if (player.life <= 0) return
-  player_action = {a = 0x00, d = -1}
+  temp_action = {a = 0x00, d = -1}
   if (equipped == "c4" and inventory["socom"] > -1) equipped = "socom"; return
   if (equipped == "socom" and inventory["c4"] > -1) equipped = "c4"; return
 end
 
-function update_turn()
+function input_direction(d)
+  if (btn(0)) d = 3
+  if (btn(1)) d = 1
+  if (btn(2)) d = 0
+  if (btn(3)) d = 2
+  return d
+end
+
+function input_action(a)
+  if (btn(4)) a = 0x01
+  if (btn(5)) a = 0x10
+  if (btn(4) and btn(5)) a = 0x11
+  return a
+end
+
+function any_input()
+  return (btn(0) or btn(1) or btn(2) or btn(3) or btn(4) or btn(5))
+end
+
+function do_turn()
+  if (temp_action != nil) player_action = temp_action
+
+  if (player_action.a == 0x10) then
+     attempt_swap()
+     player_action = {a = 0x00, d = -1}
+   end
+
+  if (turn_start == nil) temp_action = nil; start_turn(); return
   update_frame(turn_start)
+
   if (chunk >= 100) end_turn()
 end
 
-function update_idle()
-  update_frame(idle_start)
-  if (chunk >= 100) idle_start = time()
+function take_input()
+  input_act = input_action(input_act)
+  input_dir = input_direction(input_dir)
+
+  if (input_act == 0x11) then
+    if (not restarting) restart_time = time()
+    restarting = true
+    if (time() - restart_time >= 3) load_level(level)
+  else
+    restarting = false
+  end
+
+  if (idle_start != nil) then
+    update_frame(idle_start)
+    played_cancel = false
+
+    if (any_input()) then
+      if (not taking_input) sfx(9)
+      temp_action = {a = input_act, d = input_dir}
+      taking_input = true
+      idle_start = time()
+      return false
+    end
+
+    if (taking_input and not any_input()) then
+      taking_input = false
+      idle_start = nil
+      input_act = 0x00
+      input_dir = -1
+      return false
+    end
+
+    if (time() > idle_start + turn_break) then
+      idle_start = nil
+      input_act = 0x00
+      input_dir = -1
+    end
+
+    return false
+  else
+    if (any_input() and played_cancel == false) played_cancel = true; sfx(8)
+  end
+
+  return true
 end
 
 function _update()
-  if (turn_start == nil) player_action.a = input_action()
-  d = input_direction()
-  if (d > -1) player_action.d = d
-  if (turn_start != nil) update_turn(); return
-  if ((player_action.d > -1 and d == -1 and player_action.a != 0x10)
-    or (not btn(4) and player_action.a == 0x01)
-    or (not (btn(4) or btn(5)) and player_action.a == 0x11)) then
-    start_turn(); return
+  if (player.life <= 0) then
+    a = input_action()
+    if (a == 0x11) load_level(level)
+    do_turn()
+    return
   end
 
-  if (player_action.a == 0x10 and not btn(5)) then
-    attempt_swap()
-  end
-
-  update_idle()
+  if (not take_input()) return
+  do_turn()
 end
 
 function pick_up_items()
   for i in all(items) do
-    if (player.pos.x == i.pos.x and player.pos.y == i.pos.y) then
+    if cmp_pos(player.pos, i.pos) then
       inventory[i.pattern] = inventory_max[i.pattern]
       equipped = i.pattern
       del(items, i)
@@ -977,13 +1076,9 @@ function pick_up_items()
   end
 end
 
-function pos_equal(pos1, pos2)
- return (pos1.x == pos2.x and pos1.y == pos2.y)
-end
-
 function tile_shift(actor)
   apos = act_pos(actor)
-  if (not pos_equal(apos, actor.pos)) return {x=((apos.x - actor.pos.x) * frame * 2), y=((apos.y - actor.pos.y) * frame * 2)}
+  if (not cmp_pos(apos, actor.pos)) return {x = (apos.x - actor.pos.x) * frame * 2, y = (apos.y - actor.pos.y) * frame * 2}
   return {x=0, y=0}
 end
 
@@ -997,17 +1092,17 @@ function sprite_for(actor)
       end
     end
 
-    if (actor.life == -2) then -- disappeared
+    if (actor.life == -2 or is_water(actor.pos)) then -- disappeared
       return 255
     end
 
     return sprites[actor.pattern][5][4]
   end
 
+  if (actor == player and is_water(actor.pos) and is_water(act_pos(actor))) return 14
+
   if (actor.blast_pos != nil) then
-    f = actor.facing + 1
-    if (f > 3) f = 0
-    return sprites[actor.pattern][f][7]
+    return sprites[actor.pattern][actor.facing + 1][8]
   end
 
   if (actor.hurt_frames > 0) then
@@ -1016,12 +1111,6 @@ function sprite_for(actor)
 
   if (actor.stunned_turns > 0) then
     return sprites[actor.pattern][8][(frame % 2) + 1]
-  end
-
-  if (actor.attack_frames > 0) then
-    f = actor.facing + 1
-    if (f > 3) f = 0
-    return sprites[actor.pattern][7][f]
   end
 
   if (turn_start != nil) then
@@ -1072,7 +1161,7 @@ function draw_lasers()
       if (d == -1) d = actor.facing
       tiles = collect_tile_line(actor, d, true)
       for tile in all(tiles) do
-        if (actor != player or inventory["socom"] > -1 and equipped == "socom") spr(sprites[actor.pattern][7][actor.act.d % 2 + 1], tile.x*8, tile.y*8)
+        if (actor != player or inventory["socom"] > -1 and equipped == "socom") spr(sprites[actor.pattern][7][d % 2 + 1], tile.x*8, tile.y*8)
       end
       -- if (actor == player and equipped == "socom" and inventory["socom"] > 1) then
       --   spr(46, tiles[1].x*8, tiles[1].y*8)
@@ -1082,22 +1171,44 @@ function draw_lasers()
   end
 end
 
-function draw_movement_ui()
-  if (idle_start != nil and player_action.a == 0x00 and player_action.d > -1) then
-    ap = to_pos(player_action.d)
-    fp = {x = player.pos.x + ap.x, y = player.pos.y + ap.y}
-    if (not (is_wall(fp) or is_glass(fp))) then
-      pal(8, 11)
-      spr(46, fp.x * 8, fp.y * 8)
-      spr(sprites["objects"]["blood_prints"][player_action.d+1], fp.x * 8, fp.y * 8)
-      pal(8, 8)
-    end
+function draw_idle_ui()
+  if (idle_start != nil) then
+    f = false
+    if (frame > 3) f = true
+    if (f) pal(7,10)
+    if (input_act != 0x00) pal(7,8)
+    spr(159, player.pos.x * 8, (player.pos.y - 1) * 8)
+    if (f or input_act != 0x00) pal(7,7)
   end
 end
 
+function draw_movement_ui()
+  if (temp_action != nil and temp_action.a == 0x00 and temp_action.d != -1 and idle_start != nil) then
+    ap = to_pos(temp_action.d)
+    fp = {x = player.pos.x + ap.x, y = player.pos.y + ap.y}
+    pal(8, 11)
+    spr(46, fp.x * 8, fp.y * 8)
+    spr(sprites["objects"]["blood_prints"][temp_action.d+1], fp.x * 8, fp.y * 8)
+    pal(8, 8)
+  end
+end
+
+function draw_gloves_ui()
+  if (temp_action == nil) return
+  if (idle_start != nil and temp_action.a == 0x01 and equipped == "gloves") then
+    d = temp_action.d
+    if (d == -1) d = player.facing
+    ap = to_pos(d)
+    fp = {x = player.pos.x + ap.x, y = player.pos.y + ap.y}
+    spr(31, fp.x * 8, fp.y * 8)
+  end
+end
+
+
 function draw_gun_ui()
-  if (idle_start != nil and player_action.a == 0x01 and equipped == "socom") then
-    d = player_action.d
+  if (temp_action == nil) return
+  if (idle_start != nil and temp_action.a == 0x01 and equipped == "socom") then
+    d = temp_action.d
     if (d == -1) d = player.facing
     ap = to_pos(d)
     fp = {x = player.pos.x + ap.x, y = player.pos.y + ap.y}
@@ -1105,9 +1216,17 @@ function draw_gun_ui()
   end
 end
 
+function draw_death_ui()
+  print("game over.", 47, 57, 2)
+  print("game over.", 46, 58, 8)
+  print("restart? press z+x", 28, 76, 5)
+  print("restart? press z+x", 27, 77, 7)
+end
+
 function draw_c4_ui()
-  if (idle_start != nil and player_action.a == 0x01 and equipped == "c4") then
-    d = player_action.d
+  if (temp_action == nil) return
+  if (idle_start != nil and temp_action.a == 0x01 and equipped == "c4") then
+    d = temp_action.d
     if (d == -1) d = player.facing
     ap = to_pos(d)
     fp = {x = player.pos.x + ap.x, y = player.pos.y + ap.y}
@@ -1116,42 +1235,55 @@ function draw_c4_ui()
 end
 
 function draw_restart_ui()
-  if (idle_start != nil and player_action.a == 0x11) then
+  if (temp_action == nil) return
+  if (idle_start != nil and temp_action.a == 0x11) then
+    print("restart?", 49, 65, 5)
     print("restart?", 48, 66, 7)
+    l = 3 - flr(time() - restart_time)
+    print(tostr(l), 63, 73, 2)
+    print(tostr(l), 62, 74, 8)
   end
+end
+
+function object_spr(o, i)
+  spr(sprites["objects"][o.pattern][i], o.pos.x*8, o.pos.y*8)
 end
 
 function draw_objects()
   for o in all(scanners) do
-    if (o.player_allowed or is_scanner_active(o)) then
-      spr(sprites["objects"][o.pattern][2], o.pos.x*8, o.pos.y*8)
+    if (o.player_allowed or o.unlocked) then
+      object_spr(o, 2)
     else
-      spr(sprites["objects"][o.pattern][1], o.pos.x*8, o.pos.y*8)
+      object_spr(o, 1)
     end
   end
 
   for t in all(trapdoors) do
     if (t.active) then
-      spr(sprites["objects"][t.pattern][1], t.pos.x*8, t.pos.y*8)
+      object_spr(t, 1)
     else
-      spr(sprites["objects"][t.pattern][2], t.pos.x*8, t.pos.y*8)
+      object_spr(t, 2)
     end
   end
 
   for m in all(multilocks) do
     if (m.active) then
-      spr(sprites["objects"][m.pattern][2], m.pos.x*8, m.pos.y*8)
+      object_spr(m, 2)
     else
       if (m.player_allowed) then
-        spr(sprites["objects"][m.pattern][3], m.pos.x*8, m.pos.y*8)
+        object_spr(m, 3)
       else
-        spr(sprites["objects"][m.pattern][1], m.pos.x*8, m.pos.y*8)
+        object_spr(m, 1)
       end
     end
   end
 
   for g in all(goals) do
-    spr(sprites["objects"][g.pattern][1], g.pos.x*8, g.pos.y*8)
+    object_spr(g, 1)
+  end
+
+  for r in all(rations) do
+    object_spr(r, 1)
   end
 end
 
@@ -1239,34 +1371,25 @@ function draw_blood_ui()
 end
 
 function draw_ui()
-  -- draw action brackets
-  if (idle_start != nil and (player_action.d > -1 or player_action.a != 0x00)) then
-    if (player_action.a != 0x11) then
-      spr(62, 17, 3)
-      spr(63, 41, 3)
-    else
-      spr(62, 17, 3)
-      spr(63, 49, 3)
-    end
-  end
-
   -- draw action symbols
-  if (idle_start != nil and player_action.a == 0x01) spr(57, 25, 3)
-  if (idle_start != nil and player_action.a == 0x10) spr(56, 25, 3)
-  if (idle_start != nil and player_action.a == 0x11) spr(57, 25, 3); spr(56, 33, 3)
-  if (idle_start != nil and player_action.a == 0x00 and player_action.d > -1) spr(58 + player_action.d, 25, 3)
-  if (idle_start != nil and (player_action.a == 0x01 or player_action.a == 0x10) and player_action.d > -1) spr(58 + player_action.d, 33, 3)
-  if (idle_start != nil and player_action.a == 0x11 and player_action.d > -1) spr(58 + player_action.d, 41, 3)
 
-  -- draw health bar
+  --draw health bar
   rect(2,2,player.max_life * 5 + 3,7,6)
   rectfill(3,3,player.max_life * 5 + 2,6,2)
   if (player.life > 0) rectfill(3,3,player.life * 5 + 2,6,3)
   print("life", 4, 6, 7)
 
+  -- draw o2 bar
+  if (is_water(player.pos)) then
+    rect(2,13,player.max_o2 * 5 + 3,18,6)
+    rectfill(3,14,player.max_o2 * 5 + 2,17,1)
+    if (player.o2 > 0) rectfill(3,14,player.o2 * 5 + 2,17,12)
+    print("o2", 4, 17, 7)
+  end
+
   -- draw item use.
   if (equipped == "socom") draw_socom()
-  if (equipped == "hands") draw_hands()
+  if (equipped == "gloves") draw_hands()
   if (equipped == "c4") draw_c4()
   if (player.blood_prints >= 1) draw_blood_ui()
 
@@ -1278,7 +1401,7 @@ function _draw()
   cls()
   l = levels[level]
   a = act_pos(player)
-  if (player.pos.x == a.x and player.pos.y == a.y) then
+  if cmp_pos(player.pos, a) then
     camera((player.pos.x * 8) - 60, (player.pos.y * 8) - 64)
   else
     xd = a.x - player.pos.x
@@ -1295,28 +1418,34 @@ function _draw()
   if (player.life > 0) then
     draw_movement_ui()
     draw_gun_ui()
+    draw_gloves_ui()
     draw_c4_ui()
+    draw_idle_ui()
   end
   draw_lasers()
   camera(0, 0)
-  draw_restart_ui()
+  if (player.life <= 0) then
+    draw_death_ui()
+  else
+    draw_restart_ui()
+  end
   draw_ui()
 end
 __gfx__
 00000000000000000000000000000000441444400000000000000000000000000000010080000000080000000000000000000000000000000000000000000000
 0000000000444400000000000104444000411110010444400000000004444000004444100e044400000e08000000000000000000000000000000000000000000
-00700700041111000044440004111110100f3f30041111100044440041111000041811408883114000808e800000000000000000000000000000000000000000
-0007700001f3f30004111100004f3f30151ffff0004f3f30041111001f3f3000043f3f000e8ef340100388140000000000000000000000000000000000000000
-0007700004ffff0001f3f300000ffff015111f1f000ffff001f3f3004fff55600888fff01888f440108e8f14000388e100444400000000000000000000000000
-0070070000111000041fff0000f11f0000000000001110f0044fff000111f5000081110005811480051ff34480e88388041f110f0000f0000000000000000000
-000000000f555f0000111f0000155000000000000f0551000111f1f0055500000f0551008058000805111e801188ff8401f1f301000010000000000000000000
-000000000010100000f110000000010000000000001000000015111001010000000001000011000000f110e811f8844004f1ff01000010000000000000000000
+00700700041111000044440004111110100f3f30041111100044440041111000041811408883114000808e800000000000000000000000000044440000000000
+0007700001f3f30004111100004f3f30151ffff0004f3f30041111001f3f3000043f3f000e8ef340100388140000000000000000000000000411110000000000
+0007700004ffff0001f3f300000ffff015111f1f000ffff001f3f3004fff55600888fff01888f440108e8f14000388e1004444000000000001f3f30000000000
+0070070000111000041fff0000f11f0000000000001110f0044fff000111f5000081110005811480051ff34480e88388041f110f000000000000000000000000
+000000000f555f0000111f0000155000000000000f0551000111f1f0055500000f0551008058000805111e801188ff8401f1f301000000000000000000000000
+000000000010100000f110000000010000000000001000000015111001010000000001000011000000f110e811f8844004f1ff0100f000f00000000000000000
 000000000000000000000000000000000000000000000000000000000000500000000000000b0000008800000000000000000000000000000000000000000000
 000000000044400000000000004441000000000000041400000000000004440000000000000b0000008800000000000000800000000000000000000033000033
 000000000444440000044400044414001041440000444140004440000044444000000000000b0000008000000000088800880000000088800000000030000003
-0000000001111100004444400111110011111440001111100444440000111110bbbbbbbb000b00000000000000000088008800000000880000000000000b0000
-000000000f441400001111100f44440015555100004444f00111110000f4414000000000000b00000000880000880000000000008800000000000000000bb000
-000000000044400000f4410001544000f11110f00005441004414f00001111f000000000000b00000000880008880000000008008880000000000000000bb000
+0000000001111100004444400111110011111440001111100444440000111110bbbbbbbb000b00000000000000000088008800000000880000000000000bb000
+000000000f441400001111100f44440015555100004444f00111110000f4414000000000000b00000000880000880000000000008800000000000000000bbb00
+000000000044400000f4410001544000f11110f00005441004414f00001111f000000000000b00000000880008880000000008008880000000000000000b0000
 000000000f555f00000555f0001510000000000000055100015551000005550000000000000b0000000008000000000000008800000000000000000030000003
 000000000010100000f1110000100f000000000000f00100001110000001010000000000000b0000000000000000000000008800000000000000000033000033
 00000000000000000000000000100000004444000000010000000000000000000000000000008000000000000000000000000000000000000000000000000000
@@ -1351,37 +1480,37 @@ __gfx__
 01566510555665515556655554445451151551510015551010161010101610100009500051000015010015555555566700000000000000000000000000000000
 01166510115665111111111154445510115655100011610000160101010610010119511011011011c01001111111116600000000000000000000000000000000
 01566510000561000000000015555100051550100156650001051000001501000156651000000000010c10106777666700000000000000000000000000000000
-01566510000000000156651000166510010000000010001001061000001601000156651000100100000000000000000000000000000000000000000000000000
-01566111111111111116651000166511000100000101c00110160100010610100118511011011011000000000000000000000000000000000000000000000000
-0156655155551555155665100156655111101010011c110010166555556610100008500051000015000000000000000000000000000000000000000000000000
-01666666666665666666661001666666010100001c01101010150510150510100108501065555556000000000000000000000000000000000000000000000000
-0165666666566666666656100165666500010110001101c101050500050501000108501068888886000000000000000000000000000000000000000000000000
-01566555515555555556651001566551000110001100cc0110101010101010100008500051000015000000000000000000000000000000000000000000000000
-0011111111111111111111000016651100100010011c011000110101010110010118511011011011000000000000000000000000000000000000000000000000
-00000000000000000000000000156100000000111010100001001000001001000156651000000000000000000000000000000000000000000000000000000000
-00111100011665100000000001566100000000000000000001511100005c75000010010000000000000000000000000000000000000000000000000000000000
-011551100156651001111111115561001111111015155100166510100107c0100101101001111111000000000000000000000000000000000000000000000000
-01566110015565101155551515566510515555115666661005510010000cc0005000000511155555000000000000000000000000000000000000000000000000
-01566510015665101566566666666610666566516681666156500001010cc0107cccc7cc15666666000000000000000000000000000000000000000000000000
-01556510015661101566666656665610666666516110166166510010010cc010c7cccc7c15665666000000000000000000000000000000000000000000000000
-01566510011551101115555515566510555551116100156106651010000c70005000000511555515000000000000000000000000000000000000000000000000
-011665100011110001111111115661001111111066555610156551510107c0100101101001111111000000000000000000000000000000000000000000000000
-01566510000000000000000000166100000000000166610051115500005cc5000010010000000000000000000000000000000000000000000000000000000000
+01566510000000000156651000166510010000000000000001061000001601000156651000100100000000000000000000000000000000000000000000000000
+01566111111111111116651000166511000100000000000010160100010610100118511011011011000000000000000000000000000000000000000000000000
+01566551555515551556651001566551111010100000000010166555556610100008500051000015000000000000000000000000000000000000000000000000
+01666666666665666666661001666666010100000000000010150510150510100108501065555556000000000000000000000000000000000000000000000000
+01656666665666666666561001656665000101100000000001050500050501000108501068888886000000000000000000000000000000000000000000000000
+01566555515555555556651001566551000110000000000010101010101010100008500051000015000000000000000000000000000000000000000000000000
+00111111111111111111110000166511001000100000000000110101010110010118511011011011000000000000000000000000000000000000000000000000
+00000000000000000000000000156100000000110000000001001000001001000156651000000000000000000000000000000000000000000000000000000000
+00111100011665100000000001566100000000000000000001511100005c75000010010000000000005c75000010010000000000000000000000000000000000
+011551100156651001111111115561001111111015155100166510100107c01001011010011111110c00c0100101101000000000000000000000000000000000
+01566110015565101155551515566510515555115666661005510010000cc00050000005111555550000000050c0000500000000000000000000000000000000
+01566510015665101566566666666610666566516681666156500001010cc0107cccc7cc1566666601000010700000cc00000000000000000000000000000000
+01556510015661101566666656665610666666516110166166510010010cc010c7cccc7c1566566601000c10c700000c00000000000000000000000000000000
+01566510011551101115555515566510555551116100156106651010000c70005000000511555515000c00005000000500000000000000000000000000000000
+011665100011110001111111115661001111111066555610156551510107c01001011010011111110107101001011c1000000000000000000000000000000000
+01566510000000000000000000166100000000000166610051115500005cc5000010010000000000005cc5000010010000000000000000000000000000000000
 0010010001566510000000000010010000000000000000000010010001000010001001000010010000100100bbbbbbbb88888888666666666666666600008000
 010110100112511011011011010110100dccccd0000000000101101003bbbb30011651500116515001165150b333333b82222228611000111000111600088800
 00000000000000005100001501555510d000000d000000000155551033333333016115100161151001611510b33bbb3b8282222861b308218208211688008800
 0100001001000010600000560281182000dccd000055850003b11b300000000000582100005b3100005a9100b3bbbb3b82282228601110001110001688000880
 010000100100001060000026028118200d0000d00000000003b11b30bbbbbbbb001285000013b5000019a500b3b3333b82228228608218208218200608800000
-00000000000000005100001501555510000cc0000055b5000155551033333333015116100151161001511610b33bbb3b82228828600011100011100600008800
+00000000000000005100001501555510000cc000005585000155551033333333015116100151161001511610b33bbb3b82228828600011100011100600008800
 0101101001000010110110110101101001011010005555000101101001000010051561100515611005156110b333333b8222222861b9c8110001110600008880
 0010010001000010000000000010010000100100000000000010010013bbbb31001001000010010000100100bbbbbbbb88888888666666666666666600000088
 01566510000000007777677777777677001001000666776677676600001001000000000667777777776766608888888888888888bbbbbbbbbbbbbbbb00000000
 01195110110110117677767777677767060110100167677777777760060110100101666706777677777777008222222222222228b33333333333333b00000000
-00000000510000156777777767767777676060601006777776777601676060001006777706776776767776018288882929292928b3bbbb333993993b00000000
-01000010600000567777777777777767677676760167777777676010677676100167777706777777776760108288222929292928b3b3bbb33993993b00000000
-01000010600000967777676767767676777777670106767777777610777777600106767701676776777776108282222222222228b3bb3b333333333b00000000
-00000000510000156777767767606066677677771067776777776001677677601067776700060676766760018222222929292928b33333333993993b00000000
-01000010110110117777777706011016776777760677777777767610776777600677777701011060760610108222222222222228b33333333333333b00000000
+00000000510000156777777767767777676060601006777776777601676060001006777706776776767776018288882929292928b3bbbb333993993b00010000
+01000010600000567777777777777767677676760167777777676010677676100167777706777777776760108288222929292928b3b3bbb33993993b00171000
+01000010600000967777676767767676777777670106767777777610777777600106767701676776777776108282222222222228b3bb3b333333333b00171000
+00000000510000156777767767606066677677771067776777776001677677601067776700060676766760018222222929292928b33333333993993b00111000
+01000010110110117777777706011016776777760677777777767610776777600677777701011060760610108222222222222228b33333333333333b00171000
 01000010000000007776777600100100777777760066767776776000777777760066767700100100600000008888888888888888bbbbbbbbbbbbbbbb00000000
 01566510000000007777677777776777777776777777677700000000000000007717617700000000000000000000000000000000000000000000000000055000
 01185110110110117766767776777777767766777677777700000300000003007116515700199100000000000000000000000000007777000005560000500050
@@ -1391,14 +1520,14 @@ __gfx__
 0000000051000015677766776667767767667677766677770000003000080000615116170199a9100066666000066000006776000a7777a00065000500000050
 01000010110110117777667777777777776677777777777700000030000300007515611719aa9a9100000000000000000000600000aaaa000006650000005000
 01000010000000007777767677767776777777767776777600000000000000007716717601011010000000000000000000000000000000000000000055500000
-15555551155555510000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-51111115500000050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-51111115050550500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-51166115011111100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-05555550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-51166115000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-51111115000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-15555551155555510000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0010010001555510005c750000100100001001000100010100100010000000000000000000000000000000000000000000000000000000000000000000000000
+01011010500000050c00c0100101101001011010100110100101c001000000000000000000000000000000000000000000000000000000000000000000000000
+00000000050550500000000050c00005000bb00000100101011c1100000000000000000000000000000000000000000000000000000000000000000000000000
+010000100000000001000010700000cc01b11b10010010101c011010005585000055b50000000000000000000000000000000000000000000000000000000000
+011111100000000001000c10c700000c01b33b1010010010001101c1000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000c000050000005003bb300001001001100cc010055b5000055b50000000000000000000000000000000000000000000000000000000000
+01000010000000000107101001011c100103301001001001011c0110005555000055550000000000000000000000000000000000000000000000000000000000
+0011110005555550005cc50000100100001001001001001010101000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000001008000000008000000000000000000000000000000000000000000000000000000000000000000000000000000
 00555500000000000005555005555000000555100e055500000e0800000000000022220000000000000000000000000000000000000000000000000000000000
 05555500005555000055555055555000005855508883115000808e80000000000222220000000000000000000000000000000000000000000000000000000000
@@ -1423,51 +1552,58 @@ __gfx__
 00111000001fff000011110000f11100051f3550051f3550055f550f00000f000000000000000000000000000000000000000000000000000000000000000000
 0f555f0000111f00001550f000555000151ff550151ff55005f5f305000005000000000000000000000000000000000000000000000000000000000000000000
 0010100000f51000001000000010100011f0550011f0550005f5ff05000005000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000111000000000000000000000000000000000000000000000000000000000000000000000000000
-0055550000000000055550000005555000000000000000000f555ff0000000000000000000000000000000000000000000000000000000000000000000000000
-00555550005555000555550000055555000000000000000000101000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00555500000000000555500000055550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00555550005555000555550000055555000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 003f3f500055555003f3f5000003f3f5000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00ffff00003f3f500ffff0000655fff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0001110000fff10000f11f00005f1110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00f555f000f111000005510000005550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0001010000011f000010000000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __map__
-404442bf40616161616142406152416161616142636141616142bfbfbfbfbfbfbf7f7f7f7f7f7f7f7f7f7f7f7f7f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006565656565656565000000408242bf4061616161614240615241616161614200
-5021636173c0808080e050430186438380f08350430181c080504961516146545446464646464646464646464657000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000065564646464657651000005021636173c0808080e050430186438380f0835000
-50864383508053535380505080806341616144516361738053505065476565769894970fbf98979894970f9897470000005165656565564657656565656551000000000000000000000000000000000000000000000000000000000000000000654785c080844765000000508643835080535353805050808063416161445100
-508350804383808053805063616161738080f050636173d05350636151617498929296a70f999292939294929a4700000050464646546788664646464646500000000000000000000000000000000000000000000000000000000000000000006566465780566765000000508350804383808053805063616161738080f05000
-6344738050805380538050508780844383548550508750888050430181bfa69992929294978495968595939abf47000000604200c09894949494949497a65000000000000000000000000000000000000000000000000000000000000000000065656547b0476565000000634473805080538053805050878084438354855000
-5085508050d0808080f0506082616151616161626359738080506361516174989293929292949293949aa70000470000bfbf4301a6959292929292929af0580000000000000000000000000000000000000000000000000000000000000000004641617480724a650000005085508050d0808080f05060826161516161616200
-5080508643807083406162bfbfbf0fbf000000005084438680505065476576999abf999292929a00959497000063614200406200a79993939393939af0a65000000000000000000000000000000000000000000000000000000000000000000001818880e08863460000005080508343807083406162bfbfbfbfbf0000000000
-508643d06345514473bfbfbfbfbf0f000000000060615261616260465146466161740f99939a0f009992929497688750005046464654464657885646464650000000000000000000000000000000000000000000000000000000000000000000465080b080805887000000508643d06345514473bfbfbfbfbfbf000000000000
-606152617384508750ffbfbf0000000000000000000000000000bfbf4798949497bfbfbf0fbfa7000f9993939a636162005165656565656566466765656551000000000000000000000000000000000000000000000000000000000000000000655088c080885046000000606152617384508750ffbfbf000000000000000000
-00000000606152616200bfbf000000000000bf40614200000000bfbf479993939abf000fa600000f0000000f00470000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000656061616161626500000000000000606152616200bfbf000000000000000000
-4f63615254526161516565bf0000bfbfbfbf65508743000000000000664646464646464646464646464646464667000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004f63615254526161516565bf000000000000000000
-4048656565478a47656563bfbfbfbfbfbf65655159730000000000007f7f7f7f7f7f7f7f7f7f7f7fbfbfbfbfbfbfbfbfbfbf0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004048656565478a47656563bf000000000000000000
-48465765566780665765507fbfbf65656565655084506565000000bfbfbfbfbfbfbfbfbf7f7f0000bfbfbfbfbfbfbfbfbfbf000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000484657656547bf476565507f7f7f00000000000000
-548066466780c0806646636141636141616161524452614a6500bfbfbf40614200406142bf0000bfbfbfbfbfbfbfbfbfbfbf0000004961616161416161614a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000054bf66464667926646466361417f00000000000000
-5401808480805380808a5887434301818080808a8380f0506500bf00bf508460617380636142bfbfbfbf406142634442406142000050808080e0718080805000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007601bfbf8492bf92bfbf5887500000000000000000
-758056465780f080564663617363615274808072616161730000bf00bf430180805088638050bfbfbf4062c06073016362806042bf5080567880807857e050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000075bf56464657bf5646466361730000000000000000
-6554676566578056674951545451545476d0808a8080f0500000bf00bf636142e071d07180636142bf5080808877807780808850bf508077c08080e07780500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000655467656547bf476549517f000000000000000000
-6565516565478a636162656565656565547080496161616200000000bfbfbf50808a8080e0588750bf50808880c0808080888050bf6374c08080808080f05000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006565516565478a6361624f4f000000000000000000
-4f4f6061416174540000000000af6565655080506565000000000000bfbfbf738070807088636162bf5088808077807788808050bf50c0d08011808080795142000000000000000000000000000000000000000000000000000000000000000000000000000000000000004f4f60614161745400000000000000000000000000
-0000bf0000000000000000000000af656550885065bfbfbfbf00000000000050885080508050bebebf6042804051595142f04062bf508077d08080f07780504300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000406161614200000000000065606162af0000000000000000000050806361526162bebebebe6061625087506061620000508066788080786780636200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000406152c080805161420000000000000000000000000000000000000060616200bfbfbfbfbfbfbfbfbfbf606162bfbfbf00005080808070d0808080506500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000500180888a88588743000000000000000000000000000000000000000000bfbfbfbf406142bfbfbfbf00000000bfbfbf0000638040455141787841486500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000006061418080f05161620000000000000000404461420000000000000000004061616173e06361615161614200000000000000508343f08643f08643875400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000606161616200000000000000000040622188604200000000000000005080808043834380808080f0500000bf00000000606151616151616151746500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000004061616161614200000000000050808080885000000000000000005088636151805161615180887300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000004061425080c08080835000000000000050888080f05000000000000000005080500180f0c080807780f050bf000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000508460738040616144510000000000006042d080406200000000000000005080508070804061615261616200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000043018343e050c0808060416142000000405261597300bf00000000bf000050d0508063595161614161420000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000634280508050805380834387500000005087808450bfbfbf000000bfbf005088637873834384f08187500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000bf50d05080508080f0405261620000006061616162bfbfbf000000bfbf00508050d050806361615261620000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000bf52615161516161615100000000000000bf0000000000000000000000006061526152616200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffffffff00ffffffffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffffffff64646464ffffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffffff64b6b6b6b66464ffffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffff64b6564657b654b6646464646464646400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffffff64708047b6b6b6b6b6b6b6b6b6b64061616142000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffffffff50805575464ab6b6564646464650b5b5b550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffffffff50b050018050b6b64784808080a0b587b550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffff40616280508084634161518051616142b5b5b550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffff50c080806346806073c077808080806361616162000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ff406151617446518080f0634651465161825242000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0050b4478485e06346b0467380808077f0808043000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0060615241597862c08080478070b463b0416173ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00ff00ff5080b4b080b08084b04386818077f050ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000ff604178428080804078516151b0516162ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000000050d06342b040628080c0778050ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000606152738a4386805380438650ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000063615242f080806361620000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000606161616200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000bf000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000ffffffffffffffbfbf0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000ffffffffffffffffffffffffff0000ffffffffffffffbfbf0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000bfffffffffffffffffff00000000000000bf0000000000000000000000006061526152616200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __sfx__
 000802021675016750177501675015750147501575015750137501475015750167501775017750177501775017750177501775017750167501575016750177501875018750187501875018750187501875018750
 001000001a752000001a750000001a752000001a750000001a752000001a750000001a752000001a7520000019752000001975200000197520000019750000001575000000157500000015750000001575000000
 011000001675000000167500000016750000001675000000167500000016750000001675000000167500000018750000001875000000187500000018750000001575000000157500000015750000001575000000
 011000000e7500e7500e7500e7500000016750000001575013750117501075011750137500e750000000d7500d750000000e7500e75010750107500e7500e750000000d7500d7500000000000000000000000000
+00120000346301e6200c6100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000800001b5701f570205602055002170021700d5000210002100215001d50035600366003760037600386003860038600376003560034600326002f6002b60000000236001d6001760014600106000000000000
+00100000270503b7003b7000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00050000376703c67037650336402f6402b630246201e61018600126000f6000d6000c60005600206000c600046001f6001660010600000000000000000000000000000000000000000000000000000000000000
+001000000114001060010400b600056000b60011f0011f0011f0011f0011f0011f0011f0011f0011f0011f0011f00000000000000000000000000000000000000000000000000000000000000000000000000000
+00100000150101d0000c0000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00020000156501f6301f630207301e750146501f6301f630207301e75000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __music__
-00 01424344
+00 01024344
