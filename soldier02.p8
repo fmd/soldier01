@@ -1,1624 +1,333 @@
 pico-8 cartridge // http://www.pico-8.com
 version 16
 __lua__
--- --- new todo --- --
--- fix weapon switch
--- add codec
--- --- iffy/general todo --- --
--- todo: introduce blood footprint mechanic with some levels
--- todo: finish c4 placement
--- --- refactor todo --- --
--- todo: convert coord system to strings
--- todo: convert animation data to strings
 
--- debug values to reset on release
-game_speed = 4
-turn_break = 0.6 -- time in seconds to break between turns
-starting_level = 1
+-- facing guide: 0=none, 1=up, 2=right, 3=down, 4=left
+-- act guide:    0=still, 1=walk, 2=shoot, 3=change, 4=blast, 5=vault, 6=nil, 7=nil
 
--- universalish input values
-z_down = false
-x_down = false
+------------------------------------
+--- global level and sprite data ---
+-- global sprite map
+sprite_store = { floor = 128,
+                 void = 255,
+                 select = 46,
+                 trapdoor = {176, 177},
+                 player = {1,17,33,49},
+                 actor = {208,192,224,240} }
 
--- restart-from-checkpoint options
-prev_inventory = { socom = -1,
-                   c4 = -1,
-                   gloves = -1 }
-
-prev_equipped = ""
-prev_keycard = 0
-prev_active_relays = {}
-current_relay = nil
-
--- current points
-keycard = 0
-equipped = ""
-
-inventory = { socom = -1,
-              c4 = -1,
-              gloves = -1 }
-
-inventory_max = { socom = 4,
-                  c4 = 2,
-                  gloves = 0}
-
--- load the sprites and that
-sprites = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/shoot/fly)
-                      {1,2,3,2,5,6,7,4},        -- east (last three=roll/shoot/fly)
-                      {33,34,35,34,37,38,39,36}, -- south (last three=roll/shoot/fly)
-                      {49,50,51,50,53,54,55,52}, -- west (last three=roll/shoot/fly)
-                      {8,9,10,11}, -- death
-                      {12, 13}, -- fall
-                      {25, 24}}, -- laser
-            enemy1 = {{208,209,210,209,210,211,211,1}, -- north (last two=roll/shoot/fly)
-                      {192,193,194,193,194,195,195,1}, -- east (last two=roll/shoot/fly)
-                      {224,225,226,225,226,227,227,1}, -- south (last two=roll/shoot/fly)
-                      {240,241,242,241,242,243,243,1}, -- west (last two=roll/shoot/fly)
-                      {196,197,198,199}, -- death
-                      {230, 231}, -- fall
-                      {41, 40}, -- laser
-                      {228, 229}, -- stunned
-                      {212, 213, 214, 215}}, -- attack
-
-            objects = {blood_prints = {26, 27, 28, 29},
-                       snow_prints = {162, 163, 164, 165},
-                       scanner = {131, 134},
-                       multilock = {136, 137, 138},
-                       trapdoor = {176, 177},
-                       multidoor = {{88, 144}, {89, 145}},
-                       keydoor = {{104, 160}, {105, 161}},
-                       door = {{67, 129}, {68, 130}},
-                       goal = {135},
-                       relay = {132, 186},
-                       ration = {180},
-                       keycard = {185}},
-            items   = {socom = 133,
-                       c4 = 183,
-                       gloves = 184},
-            effects = {explosion = {172, 173, 174, 175}} }
-
--- we use mset to replace the map while it's in play, so,
--- we store a list of replaced tiles to put back when the level is reset
-mset_restore = {}
-
--- palette swap commands and movement function strings for enemy variants
-enemy_variants = {enemy1 = {{"clockwise", {5, 5}}, -- variant 1
-                            {"line", {5, 2}}, -- variant 2
-                            {"still", {5, 13}} }}  -- variant 3
-
--- for converting a direction to a position change
-pos_map = {{0,1,0,-1}, {-1,0,1,0}}
-
--- level data
-levels = {{0, 0, 36, 30}} -- xstart, ystart, w, h
-level_items = {{"gloves"}}
-level_keycards = {{2,1,3}}
-level_keydoors = {{1,2,3}}
-level_enemy_variants = {{2,2,3,3, 2,2,3,2, 1,2,2,1,1, 3,3,1,2, 3,3,3,2,1, 3,3,1,1}}
-
--- map runthrough replacements (sprite #, pattern, facing dir)
--- note: facing dir for doors and other items with only 2 dirs is [0/1] rather than [0/1/2/3]
-map_replace = {{67,  "door", 0}, -- closed regular door
-               {68,  "door", 1},
-               {88,  "multidoor", 0}, -- closed multilock door
-               {89,  "multidoor", 1},
-               {104,  "keydoor", 0},
-               {105,  "keydoor", 1},
-               {1,   "player", 1}, -- player
-               {17,  "player", 0},
-               {33,  "player", 2},
-               {49,  "player", 3},
-               {192, "enemy1", 1}, -- enemy1
-               {208, "enemy1", 0},
-               {224, "enemy1", 2},
-               {240, "enemy1", 3},
-               {176, "trapdoor", no_floor = true},
-               {177, "trapdoor", no_floor = true},
-               {131, "scanner", false}, -- sprite #, pattern, player_allowed (scanner)
-               {134, "scanner", true},  -- sprite #, pattern, player_allowed (scanner)
-               {136, "multilock", false}, -- sprite #, pattern, player_allowed (multilock)
-               {138, "multilock", true}, -- sprite #, pattern, player_allowed (multilock)
-               {132, "relay"}, -- relays have no extra attribs yet
-               {135, "goal"},  -- goals have no extra attribs yet
-               {133, "item"},  -- the item type is taken from the level_items variable
-               {180, "ration"},
-               {185, "keycard"}}
-
-function cross_tiles(pos)
-  return {{d = 0, x = pos.x, y = pos.y - 1},
-         {d = 1, x = pos.x + 1, y = pos.y},
-         {d = 2, x = pos.x, y = pos.y + 1},
-         {d = 3, x = pos.x - 1, y = pos.y},
-         {d = -1, x = pos.x, y = pos.y}}
+function sprite_for(pattern, i)
+  local s = sprite_store[pattern]
+  if (not check_type(s, "table")) return s
+  return s[i]
 end
 
-function restore_map()
-  for m in all(mset_restore) do
-    mset(m.x + levels[level][1], m.y + levels[level][2], m.t)
+function check_type(v, t)
+  return type(v) == t
+end
+
+-- global object sprite-on-map store
+map_store = { player = {1,17,33,49},
+              actor = {208,192,224,240},
+              trapdoor = 176 }
+
+-- global level-on-map store
+levels = {{0,0,32,30}}
+
+--- / global level and sprite data ---
+--------------------------------------
+--- inter-level storage globals ------
+---  (these persist between resets)
+
+current_items = { gloves = 0,
+                  socom  = 0,
+                  c4     = 0 }
+
+input_act, input_dir, input_queue, input_down = 0,0, {}, {false,false,false,false,false,false}
+
+-- i here corresponds to immediate_input
+-- function btnpress(i)
+--   if input_act > 4 then
+--     if i > 4 then
+--       input_act = i
+--     else
+--       input_dir = i
+--     end
+--   else
+--     input_act = i
+--     if (i < 5) input_dir = i
+--   end
+-- end
+
+function any_directional_input(d)
+  return d[1] or d[2] or d[3] or d[4]
+end
+
+function btnpress(i)
+  if i > 4 then
+    input_act = i
+  else
+    input_dir = i
+    if (input_act < 5) input_act = i
   end
-
-  mset_restore = {}
 end
 
-function reset_level()
-  turn = 0
-  turn_start = nil
-  idle_start = nil
-  chunk = 0
-  last_frame = 0
-  frame = 1
-  biframe = 1
-  input_act = 0x00
-  input_dir = -1
-  temp_action = nil
-  dir_down = -1
-  restart_time = 0
-  taking_input = false
-
-  -- todo: fix this for real
-  inventory["socom"] = prev_inventory["socom"]
-  inventory["c4"] = prev_inventory["c4"]
-  inventory["gloves"] = prev_inventory["gloves"]
-
-  -- loading from checkpoint
-  equipped = prev_equipped
-  keycard = prev_keycard
+function btnrelease(i)
+  if (input_act == i) return {input_act, input_dir}
+  return nil
 end
 
-function init_level_from_map(lv)
-  actor_count = 0
-  enemy_count = 0
-  item_count = 0
-  keycard_count = 0
-  keydoor_count = 0
+function take_input()
+  local immediate_input = { btn(2), btn(1), btn(3), btn(0), btn(4), btn(5) }
 
-  actors = {}
-
-  multilocks = {}
-  scanners = {}
-  relays = {}
-  trapdoors = {}
-  goals = {}
-  items = {}
-  prints = {}
-  c4s = {}
-  explosions = {}
-  fires = {}
-  rations = {}
-  keycards = {}
-
-  doors = {}
-  multidoors = {}
-  keydoors = {}
-
-  for y = 0, levels[lv][4] - 1, 1 do
-    for x = 0, levels[lv][3] - 1, 1 do
-      for m in all(map_replace) do
-        if (lmapget(x,y) == m[1]) then
-          if (not m.no_floor) mset(x + levels[lv][1], y + levels[lv][2], 128) -- 128 is empty tile
-          if (m.no_floor) mset(x + levels[lv][1], y + levels[lv][2], 255) -- 128 is pure black
-          add(mset_restore, {x = x, y = y, t = m[1]})
-          if (m[2] == "door") add_door(m, x, y)
-          if (m[2] == "multidoor") add_multidoor(m, x, y)
-          if (m[2] == "keydoor") add_keydoor(m, x, y)
-          if (m[2] == "enemy1") add_enemy1(m, x, y)
-          if (m[2] == "player" and current_relay == nil) add_player(m, x, y)
-          if (m[2] == "scanner") add_scanner(m, x, y)
-          if (m[2] == "relay") add_relay(m, x, y)
-          if (m[2] == "trapdoor") add_trapdoor(m, x, y)
-          if (m[2] == "goal") add_goal(m, x, y)
-          if (m[2] == "item") add_item(m, x, y)
-          if (m[2] == "multilock") add_multilock(m, x, y)
-          if (m[2] == "ration") add_ration(m, x, y)
-          if (m[2] == "keycard") add_keycard(m, x, y)
+  for i=1,6 do
+    if immediate_input[i] and not input_down[i] then
+      input_down[i] = true
+      btnpress(i)
+    else
+      if not immediate_input[i] and input_down[i] then
+        input_down[i] = false
+        taken_act = btnrelease(i)
+        if taken_act then
+          input_act = 0
+          return taken_act
         end
       end
     end
-  end
-end
-
-function add_keycard(m, x, y)
-  keycard_count += 1
-  k = {pattern = "keycard", pos = {x = x, y = y}, level = level_keycards[level][keycard_count]}
-  if k.level > prev_keycard then
-    add(keycards, k)
-  end
-end
-
-function add_trapdoor(m, x, y)
-  active_door = true
-  if (m[1] == 177) active_door = false
-  add(trapdoors, {pattern = "trapdoor", active = active_door, timer = 0, pos = {x = x, y = y}})
-end
-
-function add_multidoor(m, x, y)
-  add(multidoors, {pattern = "multidoor", facing = m[3], open = 0, pos = {x = x, y = y}})
-end
-
-function add_keydoor(m, x, y)
-  keydoor_count += 1
-  add(keydoors, {pattern = "keydoor", facing = m[3], open = 0, pos = {x = x, y = y}, level = level_keydoors[level][keydoor_count]})
-end
-
-function add_multilock(m, x, y)
-  add(multilocks, {pattern = "multilock", pos = {x = x, y = y}, active = false, player_allowed = m[3]})
-end
-
-function add_ration(m, x, y)
-  add(rations, {pattern = "ration", pos = {x = x, y = y}})
-end
-
-function add_item(m, x, y)
-  item_count += 1
-  add(items, {pattern = level_items[level][item_count], pos = {x = x, y = y}})
-end
-
-function add_goal(m, x, y)
-  add(goals, {pattern = "goal", pos = {x = x, y = y}})
-end
-
-function add_relay(m, x, y)
-  r = {pattern = "relay", pos = {x = x, y = y}, active = 0}
-  for p in all(prev_active_relays) do
-    if p.x == x and p.y == y then
-      r.active = 1
-    end
-  end
-
-  add(relays, r)
-  if current_relay != nil and cmp_pos(current_relay, {x = x, y = y}) then
-    add_player({1, "player", 1}, x, y)
-  end
-end
-
-function add_scanner(m, x, y)
-  add(scanners, {pattern = "scanner", pos = {x = x, y = y}, unlocked = false, player_allowed = m[3]})
-end
-
-function add_door(m, x, y)
-  add(doors, {pattern = "door", facing = m[3], open = 0, pos = {x = x, y = y}})
-end
-
-function add_enemy1(m, x, y)
-  actor_count += 1
-  enemy_count += 1
-  a = {id = actor_count,
-       pattern = "enemy1",
-       facing = m[3],
-       variant = level_enemy_variants[level][enemy_count],
-       pos = {x = x, y = y},
-       life = 1,
-       laser_frames = 0,
-       laser_target = 0,
-       laser_direction = -1,
-       laser_tiles = {},
-       death_frames = 0,
-       fall_frames = 0,
-       hurt_frames = 0,
-       attack_frames = 0,
-       blood_prints = 0,
-       stunned_turns = 0,
-       blast_pos = nil,
-       act = {a = 0x00, d = -1}}
-  add(actors, a)
-end
-
-function add_player(m, x, y)
-  actor_count += 1
-  a = {id = actor_count,
-       pattern = "player",
-       facing = m[3],
-       pos = {x = x, y = y},
-       life = 3,
-       max_life = 3,
-       o2 = 3,
-       max_o2 = 3,
-       laser_frames = 0,
-       laser_target = 0,
-       laser_direction = -1,
-       laser_tiles = {},
-       death_frames = 0,
-       fall_frames = 0,
-       hurt_frames = 0,
-       attack_frames = 0,
-       blood_prints = 0,
-       stunned_turns = 0,
-       blast_pos = nil,
-       act = {a = 0x00, d = -1}}
-  add(actors, a)
-  player = a
-end
-
-function _init()
-  load_level(starting_level)
-end
-
-function load_level(lv)
-  restore_map()
-  level = lv
-
-  reset_level()
-  init_level_from_map(lv)
-
-  player_action = {a = 0x00, d = -1}
-  temp_action = nil
-  idle_start = time()
-end
-
-function is_empty(t)
-  for _,_ in pairs(t) do
-    return false
-  end
-  return true
-end
-
-function print_on_tile(actor)
-  p = nil
-  for o in all(prints) do
-    if ((o.pattern == "blood_prints" or o.pattern == "snow_prints") and cmp_pos(o.pos, actor.pos)) then
-      p = o
-      break
-    end
-  end
-  return p
-end
-
-function do_enemy1_variant_movement_ai(actor, apos, mt)
-  apos = act_pos(actor)
-
-  if (mt == "clockwise") then
-    directions_tried = 0
-    while cmp_pos(apos, actor.pos) do
-      actor.facing += 1
-      if (actor.facing > 3) actor.facing = 4 - actor.facing
-      actor.act.d = actor.facing
-      apos = act_pos(actor)
-      directions_tried += 1
-      if (directions_tried > 4) actor.stunned_turns = 3; return
-    end
-  end
-
-  if (mt == "line") then
-    if (cmp_pos(apos, actor.pos)) do
-      actor.facing += 2
-      if (actor.facing > 3) actor.facing = abs(4 - actor.facing)
-      actor.act.d = actor.facing
-    end
-  end
-
-  if (mt == "still") then
-    actor.act.d = -1
-    actor.act.a = 0x10
-  end
-
-  return
-end
-
-function do_enemy1_ai(actor)
-  if (actor.life <= 0 or actor.blast_pos != nil) then
-    actor.act = {a = 0x00, d = -1}
-    return
-  end
-
-  if (actor.stunned_turns > 0) then
-    actor.stunned_turns -= 1
-    if (actor.stunned_turns > 0) return
-    ha = has_live_actor(actor.pos, "")
-    if (ha and ha.id != actor.id) actor.stunned_turns = 1; return
-  end
-
-  -- if we find blood prints, follow. else, follow variant movement pattern
-  movement_type = enemy_variants[actor.pattern][actor.variant][1]
-  prev_facing = actor.facing
-  actor.act.d = actor.facing
-  printed = print_on_tile(actor)
-  if (printed) then
-    if (actor.act.a == 0x00) actor.act.d = printed.facing
-    -- if we go nowhere with the print facing, try new directions until we find a free direction (invoke variant-based ai pattern).
-    do_enemy1_variant_movement_ai(actor, apos, movement_type)
-  else
-    tiles = collect_tile_line(actor, actor.act.d, false, true)
-    if (is_empty(tiles) or movement_type == "still") then
-      -- if we can go nowhere, invoke variant-based ai pattern
-      do_enemy1_variant_movement_ai(actor, apos, movement_type)
-    end
-  end
-
-  found_player = false
-  -- with old facing, look for player to shoot
-  tiles = collect_tile_line(actor, prev_facing, true, true)
-  if (not is_empty(tiles)) then
-    for k, tile in pairs(tiles) do
-      if (cmp_pos(player.pos, tile) and player.life > 0) then
-        -- restore old facing on player found (todo: improve).
-        actor.act.a = 0x01
-        actor.act.d = prev_facing
-        found_player = true
-      end
-    end
-  end
-
-  -- with new facing, look for player to shoot
-  if (not found_player) then
-    tiles = collect_tile_line(actor, actor.act.d, true)
-    if (not is_empty(tiles)) then
-      for k, tile in pairs(tiles) do
-        if (cmp_pos(player.pos, tile) and player.life > 0) actor.act.a = 0x01
-      end
-    end
-  end
-end
-
-function do_avoidance(actor)
-  if (actor.life <= 0) return
-  -- if we are moving into a tile that someone else plans on moving into, only one should move there.
-  new_actor_pos = act_pos(actor)
-  -- if we arent moving, no need to avoid
-  if (cmp_pos(new_actor_pos, actor.pos)) then
-    return
-  end
-
-  for a in all(actors) do
-    if (a.life > 0) then
-      apos = act_pos(a)
-
-      -- todo: some enemy_variants should also dodge the player, so remove last clause for other ais
-      if (a.id != actor.id and cmp_pos(apos, new_actor_pos) and a.pattern != "player") then
-        actor.act.d = -1
-        return true -- return true if avoidance was done. if so, all actors need to redo avoidance.
-      end
-    end
-  end
-
-  return false
-end
-
-function start_actors_turns()
-  for actor in all(actors) do
-      if (actor.pattern == "player") actor.act = {a=player_action.a, d=player_action.d}
-      if (actor.pattern == "enemy1") do_enemy1_ai(actor)
-      if (actor.act.d > -1) then
-        actor.facing = actor.act.d
-      end
-    if (actor.blast_pos == nil) then
-      pickup_prints(actor)
-      if (actor.act.a == 0x01) sfx(10)
-      if (actor.blood_prints >= 1) place_new_prints(actor, "blood_prints")
-      if (is_snow(actor.pos)) place_new_prints(actor, "snow_prints")
-    end
-  end
-  avoid = true
-
-  while (avoid) do
-    avoid = false
-    for actor in all(actors) do
-      if (actor.pattern == "enemy1") then
-        avoid = do_avoidance(actor) or avoid -- we need to redo avoids if any avoid is found.
-      end
-    end
-  end
-end
-
-function end_actors_turns()
-  -- todo: different acts have different patterns
-  -- todo: dry
-  -- perform all moves first so shots line up
-  for actor in all(actors) do
-    -- todo: redirect to ai?
-    if (actor != player) then
-      if (actor.blast_pos == nil) then
-        if (actor.blood_prints >= 1) redirect_existing_prints(actor, "blood_prints"); actor.blood_prints -= 1
-        if (is_snow(actor.pos)) redirect_existing_prints(actor, "snow_prints")
-      end
-      perform_move(actor)
-    end
-
-    if (actor == player) then
-      if (is_water(act_pos(actor)) and is_water(actor.pos)) then
-        if (player.o2 <= 0 and player.life >= 0) hurt_actor(player, 1)
-        if (player.o2 >= 1) player.o2 -= 1; sfx(12)
-      else
-        player.o2 = player.max_o2
-      end
-    end
-  end
-
-  if (player.blast_pos == nil) then
-    if (player.blood_prints >= 1) redirect_existing_prints(player, "blood_prints"); player.blood_prints -= 1
-    if (is_snow(player.pos)) redirect_existing_prints(player, "snow_prints")
-  end
-
-  perform_move(player)
-
-  -- pick up rations
-  for r in all(rations) do
-    if (cmp_pos(player.pos, r.pos) and player.life > 0) then
-      player.life = player.max_life
-      sfx(15)
-      del(rations, r)
-    end
-  end
-
-  for r in all(relays) do
-    if (cmp_pos(player.pos, r.pos) and player.life > 0) then
-      if (r.active == 0) then
-        sfx(18)
-        r.active = 1
-
-        del(prev_active_relays, r.pos)
-        add(prev_active_relays, r.pos)
-
-        -- ammo and life refill on checkpoint
-        player.life = player.max_life
-        inventory["socom"] = prev_inventory["socom"]
-        inventory["c4"] = prev_inventory["c4"]
-        inventory["gloves"] = prev_inventory["gloves"]
-
-        -- save current item and keycard level
-        prev_equipped = equipped
-        prev_keycard = keycard
-        current_relay = r.pos
-      end
-    end
-  end
-
-  -- pick up keycards
-  for k in all(keycards) do
-    if (cmp_pos(player.pos, k.pos) and player.life > 0) then
-      keycard = k.level
-      sfx(14)
-      del(keycards, k)
-    end
-  end
-
-  -- perform the acts
-  for actor in all(actors) do
-    if (actor.blast_pos == nil) then
-      perform_act(actor)
-    end
-
-    actor.act = {a = 0x00, d = -1}
-    actor.blast_pos = nil
-  end
-end
-
-function to_pos(dr)
-  return { x = pos_map[1][dr + 1],
-           y = pos_map[2][dr + 1] }
-end
-
-function is_vaulting(actor)
-  -- refactor for non-player vaulters
-  return (actor == player and equipped == "gloves" and actor.act.a == 0x01)
-end
-
-function act_pos(actor)
-  if (actor.blast_pos != nil) return actor.blast_pos
-
-  -- todo: different acts have different movements.
-  -- we shoehorn vaulting in here, but like blast_pos, it needs its own system.
-  actor_point = {x = actor.pos.x, y = actor.pos.y}
-  if (actor.act.d < 0 and not is_vaulting(actor)) then
-    return actor_point
-  else
-    if (actor.act.d == -1) actor.act.d = actor.facing
-  end
-
-
-  act_dir = to_pos(actor.act.d)
-  test_point = {x = actor.pos.x + act_dir.x, y = actor.pos.y + act_dir.y}
-
-  -- gloves function
-  if (is_vaulting(actor) and is_vault_gate(test_point)) then
-    new_point = {x = test_point.x + act_dir.x, y = test_point.y + act_dir.y}
-    if (is_wall(new_point)) return actor_point
-    return new_point
-  end
-
-  if (is_wall(test_point) or (actor != player and is_water(test_point))) return actor_point
-
-  -- todo: other future moves may not move the player. consider refactoring all actions.
-  if (actor.act.a != 0x00) return actor_point
-  return test_point
-end
-
-function lmapget(x, y)
- return mget(x + levels[level][1], y + levels[level][2])
-end
-
-function is_door_wall(ds, pos)
-  for o in all(ds) do
-    if (cmp_pos(o.pos, pos)) then
-      if (o.open == 1) return false
-      return true
-    end
-  end
-end
-
-function is_snow(pos)
-  m = lmapget(pos.x, pos.y)
-  return (m == 146 or m == 162 or m == 163 or m == 164 or m == 165)
-end
-
-function is_wall(pos)
-  m = lmapget(pos.x, pos.y)
-  return is_door_wall(doors, pos) or is_door_wall(multidoors, pos) or is_door_wall(keydoors, pos) or (m >= 64 and m <= 127)
-end
-
-function is_vault_gate(pos)
-  m = lmapget(pos.x, pos.y)
-  return (m == 70 or m == 71)
-end
-
-function is_glass(pos)
-  m = lmapget(pos.x, pos.y)
-  return (m == 119 or m == 120)
-end
-
-function is_water(pos)
-  m = lmapget(pos.x, pos.y)
-  return (m == 182)
-end
-
-function is_adjacent(a, b)
-  return ((a.pos.x == b.pos.x + 1 and a.pos.y == b.pos.y) or
-    (a.pos.x == b.pos.x - 1 and a.pos.y == b.pos.y) or
-    (a.pos.x == b.pos.x and a.pos.y == b.pos.y + 1) or
-    (a.pos.x == b.pos.x and a.pos.y == b.pos.y - 1))
-end
-
-
-function open_doors_near(scans)
-  for s in all(scans) do
-    s.unlocked = true
-
-    for d in all(doors) do
-      if is_adjacent(d, s) then
-        d.open = 1
-      end
-    end
-  end
-end
-
-function open_keydoors()
-  for d in all(keydoors) do
-    if (is_adjacent(d, player)) then
-      if (keycard >= d.level) then
-        if (d.open < 1) sfx(16)
-        d.open = 1
-      else
-        sfx(17)
-      end
-    end
-  end
-end
-
-function switch_multilocks(locks)
-  for l in all(locks) do
-    l.active = not l.active
-  end
-end
-
-function open_multilock_doors()
-  for l in all(multilocks) do
-    if (not l.active) return
-  end
-
-  for d in all(multidoors) do
-    d.open = 1
-  end
-end
-
-function active_buttons(bts)
-  rets = {}
-
-  for o in all(bts) do
-    if (o.pattern == "scanner" or o.pattern == "multilock") then
-      for a in all(actors) do
-        if (a.pattern != "player" or o.player_allowed) then
-          if (cmp_pos(a.pos, o.pos) and a.life > 0) add(rets, o)
-        end
-      end
-    end
-  end
-
-  return rets
-end
-
-function keycard_door_attempts(doors)
-
-end
-
-
-function redirect_existing_prints(actor, pat)
-  if (actor.life <= 0) return
-
-  p = print_on_tile(actor)
-  if (p and actor.act.d != -1 and p.pattern == pat) p.facing = actor.act.d
-end
-
-function place_new_prints(actor, pat)
-  if (actor.life <= 0) return
-  if (is_water(actor.pos)) return
-  for t in all(trapdoors) do
-    if (cmp_pos(actor.pos, t.pos)) return
-  end
-
-  p = print_on_tile(actor)
-  if (not p) then
-    d = actor.act.d
-    if (d == -1) d = actor.facing
-    o = { pattern = pat, facing = d, pos = {x = actor.pos.x, y = actor.pos.y} }
-    add(prints, o)
-  end
-end
-
-function pickup_prints(actor)
-  if (actor.life <= 0) return
-
-  for a in all(actors) do
-    if (a.life <= 0 and actor.life > 0 and cmp_pos(a.pos, actor.pos)) then
-      actor.blood_prints = 5
-    end
-  end
-end
-
-function has_live_actor(np, exclude_pattern)
-  for a in all(actors) do
-    if (a.life > 0) then
-      if (a.pattern != exclude_pattern and cmp_pos(a.pos, np)) then
-        return a
-      end
-    end
-  end
-  return false
-end
-
-function attempt_melee(actor)
-  attack_point = act_pos(actor)
-
-  h = has_live_actor(attack_point, "player")
-
-  if (h) then
-    stun_actor(h, 3)
-    return h
   end
 
   return nil
 end
 
-function attempt_move(actor)
-  -- todo: characters other than player can melee
-
-  if (actor.pattern == "player" and player.life > 0) attempt_melee(actor)
-  actor.pos = act_pos(actor)
-end
-
-function collect_tile_line(actor, d, ignore_glass)
-  collected = {}
-  if (not (d >= 0)) return collected
-
-  tx = actor.pos.x + to_pos(d).x
-  ty = actor.pos.y + to_pos(d).y
-
-  i = 1
-  p = {x = tx, y = ty}
-  while not (is_wall(p) and (not is_glass(p) or not ignore_glass)) do
-    collected[i] = p
-    i+=1
-
-    tx += to_pos(d).x
-    ty += to_pos(d).y
-
-    p = {x = tx, y = ty}
-  end
-
-  return collected
-end
-
-function stun_actor(actor, turns)
-  actor.stunned_turns = turns
-end
-
-function fall_actor(actor)
-  actor.life = -2
-  actor.fall_frames = 2
-end
-
-function hurt_actor(actor, amount)
-  if (actor.life > 0) actor.life -= amount
-  if (actor.life < 0) actor.life = 0
-  if (actor.life == 0) then
-    sfx(5)
-    actor.life = -1
-    if (not is_water(actor.pos)) actor.death_frames = 4
-  else
-    sfx(5, -1, 1, 3)
-    if (not is_water(actor.pos)) actor.hurt_frames = 2
-  end
-end
-
-function attempt_action(player)
-  if (equipped == "socom") then
-    if (inventory["socom"] <= 0) return
-    inventory["socom"] -= 1
-    attempt_shot(player)
-    return
-  end
-
-  if (equipped == "c4") then
-    attempt_c4(player)
-    return
-  end
-
-  attempt_melee(player)
-end
-
-function c4s_for(actor)
-  cs = {}
-  for c in all(c4s) do
-    if (c.owner.id == actor.id) add(cs, c)
-  end
-  return cs
-end
-
-function blast_actor(a, d)
-  if (d == -1) return
-
-  ts = collect_tile_line(a, d, true, true)
-  blast_index = 4
-  if (#ts < 4) then
-    blast_index = #ts
-  end
-
-  blast_to = ts[blast_index]
-
-  for k, t in pairs(ts) do
-    if (k > blast_index) break
-    break_glass(t)
-
-    for aa in all(actors) do
-      if (aa != player and aa.id != a.id and cmp_pos(aa.pos, t) and aa.life > 0) then
-        stun_actor(aa, 2)
-        a.blast_pos = aa.pos
-        return
-      end
-    end
-  end
-
-  hurt_actor(a, 1)
-  a.blast_pos = blast_to
-end
-
-function cmp_pos(a, b)
-  if (a.x == b.x and a.y == b.y) return true
-  return false
-end
-
-function trip_trapdoors()
-  for t in all(trapdoors) do
-    if (t.timer > 0) then
-      t.timer -=1
-      if (t.timer == 0) t.active = false; sfx(13)
-    end
-
-    for a in all(actors) do
-      if (a.life > 0 and cmp_pos(a.pos, t.pos)) then
-        if (t.active) then
-          sfx(11)
-          t.timer = 1
-        else
-          sfx(5)
-          fall_actor(a)
-        end
-      end
-    end
-  end
-end
-
-function blow_c4(c, wait)
-  sfx(7)
-
-  for t in all(cross_tiles(c.pos)) do
-    add(explosions, {frames = 4, pos = {x = t.x, y = t.y}})
-
-    for a in all(actors) do
-      if (cmp_pos(a.pos, t) and a.life > -2) then -- > -2 because disappeared shouldnt blow
-        hurt_actor(a, 2)
-        blast_actor(a, t.d)
-      end
-    end
-
-    break_glass(t)
-    break_wall(t)
-  end
-
-  del(c4s, c)
-end
-
-function break_wall(pos)
-  nt = lmapget(pos.x, pos.y)
-  if (nt == 69 or nt == 85) swap_restore(pos, nt, 128)
-end
-
-function break_glass(pos)
-  nt = lmapget(pos.x, pos.y)
-  if (nt == 119) swap_restore(pos, nt, 178)
-  if (nt == 120) swap_restore(pos, nt, 179)
-end
-
-function swap_restore(pos, a, b)
-  mset(pos.x + levels[level][1], pos.y + levels[level][2], b)
-  add(mset_restore, {x = pos.x, y = pos.y, t = a})
-end
-
-function attempt_c4(actor)
-  dir = actor.act.d
-  if (dir == -1) dir = actor.facing
-  if (inventory["c4"] <= 0) return
-  d = to_pos(dir)
-  add(c4s, {owner = actor, timer = 3, pattern = "c4", pos = {x = actor.pos.x + d.x, y = actor.pos.y + d.y}})
-  inventory["c4"] -= 1
-end
-
-function queue_lasers(actor, a, tiles, d)
-  actor.laser_frames = 2
-  del(tiles, tiles[#tiles])
-  actor.laser_target = a.pos
-  actor.laser_direction = d
-  actor.laser_tiles = tiles
-end
-
-function attempt_shot(actor)
-  if (actor.id == player.id and player.act.d == -1) player.act.d = player.facing
-
-  sfx(4)
-  tiles = {}
-  for i, tile in pairs(collect_tile_line(actor, actor.act.d, true)) do
-    hurts = {}
-    add(tiles, tile)
-
-    for j, a in pairs(actors) do
-      if (actor != a and cmp_pos(a.pos, tile) and a.life > 0) then
-        add(hurts, a)
-      end
-    end
-
-    l = #hurts
-    for a in all(hurts) do
-      if (l > 1) then
-        if (a != player and a.life > 0) then
-          hurt_actor(a, 1)
-          queue_lasers(actor, a, tiles, actor.act.d)
-          return
-        end
-      else
-        if (l == 1) then
-          hurt_actor(a, 1)
-          queue_lasers(actor, a, tiles, actor.act.d)
-          return
-        end
-      end
-    end
-  end
-end
-
-function perform_move(actor)
-  if (actor.act.a == 0x00 or (equipped == "gloves" and actor == player and actor.act.a == 0x01)) then
-    attempt_move(actor)
-  end
-end
-
-function perform_act(actor)
-  if (actor.act.a == 0x01) then
-    if (actor.id == player.id) then
-      attempt_action(actor)
-    else
-      attempt_shot(actor)
-    end
-  end
-end
-
-function check_goals()
-  for g in all(goals) do
-    for a in all(actors) do
-      if (cmp_pos(a.pos, g.pos) and a.life > 0 and a.pattern == "player") then
-        load_level(level + 1)
-        return true
-      end
-    end
-  end
-
-  return false
-end
-
-function roll_frame()
-  for actor in all(actors) do
-    if (actor.laser_frames > 0) actor.laser_frames -= 1
-    if (actor.fall_frames > 0) actor.fall_frames -= 1
-    if (actor.death_frames > 0) actor.death_frames -= 1
-    if (actor.hurt_frames > 0) actor.hurt_frames -= 1
-    if (actor.attack_frames > 0) actor.attack_frames -= 1
-  end
-
-  for e in all(explosions) do
-    if (e.frames > 0) e.frames -= 1
-  end
-end
-
-function update_frame(start)
-  chunk = flr(((time() - start) * game_speed) * 100)
-  frame = mid(1, flr(chunk / 25) + 1, 4)
-  biframe = mid(1, flr(chunk / 12.5) + 1, 8)
-
-  -- chunk > 25 ensures every frame gets a fair shake; extends animations into idle time.
-  if (frame != last_frame and chunk > 25) then
-    roll_frame()
-    last_frame = frame
-  end
-end
-
-function start_turn()
-  turn += 1
-
-  idle_start = nil
-  turn_start = time()
-  update_frame(turn_start)
-
-  for c in all(c4s) do
-    if (c.timer == 0) blow_c4(c)
-    if (c.timer > 0) then
-      sfx(6)
-      c.timer -= 1
-    end
-  end
-
-  start_actors_turns()
-end
-
-function end_turn()
-  end_actors_turns()
-  pick_up_items()
-  trip_trapdoors()
-  open_doors_near(active_buttons(scanners))
-  switch_multilocks(active_buttons(multilocks))
-  open_keydoors()
-  open_multilock_doors()
-  prune_explosions()
-  check_goals()
-
-  player_action = {a = 0x00, d = -1}
-  turn_start = nil
-  idle_start = time()
-end
-
-function prune_explosions()
-  for e in all(explosions) do
-    if (e.frames <= 0) del(explosions, e)
-  end
-end
-
-function attempt_swap()
-  -- todo: refactor
-  if (player.life <= 0) return
-  temp_action = {a = 0x00, d = -1}
-  if (equipped == "c4" and inventory["socom"] > -1) equipped = "socom"; return
-  if (equipped == "socom" and inventory["c4"] > -1) equipped = "c4"; return
-end
-
-function input_direction(d)
-  if (btn(0)) d = 3
-  if (btn(1)) d = 1
-  if (btn(2)) d = 0
-  if (btn(3)) d = 2
-  return d
-end
-
--- this function is horribly written but until i refactor "actions" it works and its intuitive to use
-function input_action(a)
-  if (btn(4)) then
-    if (not z_down) then
-      if (a == 0x01) then
-        a = 0x00
-      else
-        a = 0x01
-      end
-      z_down = true
-    end
-  else
-    z_down = false
-  end
-  if (btn(5)) then
-    if (not x_down) then
-      if (a == 0x10) then
-        a = 0x00
-      else
-        a = 0x10
-      end
-      x_down = true
-    end
-  else
-    x_down = false
-  end
-
-  return a
-end
-
-function any_input()
-  return (btn(0) or btn(1) or btn(2) or btn(3) or btn(4) or btn(5))
-end
-
-function do_turn()
-  if (temp_action != nil) player_action = temp_action
-
-  if (player_action.a == 0x10) then
-     attempt_swap()
-     player_action = {a = 0x00, d = -1}
-   end
-
-  if (turn_start == nil) temp_action = nil; start_turn(); return
-  update_frame(turn_start)
-
-  if (chunk >= 100) end_turn()
-end
-
-function take_input(restart_only)
-  input_act = input_action(input_act)
-  input_dir = input_direction(input_dir)
-
-  if (btn(4) and btn(5)) then
-    if (not restarting) restart_time = time()
-    restarting = true
-    if (time() - restart_time >= 2 or restart_only) to_restart = true; return
-  else
-    if (not (btn(4)) and not (btn(5))) then
-      restarting = false
-      if (to_restart) to_restart = false; load_level(level);
-    end
-  end
-  if (restart_only) return
-
-  if (idle_start != nil) then
-    update_frame(idle_start)
-    played_cancel = false
-
-    if (any_input()) then
-      if (not taking_input) sfx(9)
-      temp_action = {a = input_act, d = input_dir}
-      taking_input = true
-      return false
-    end
-
-    if (taking_input and not any_input()) then
-      taking_input = false
-      idle_start = nil
-      input_act = 0x00
-      input_dir = -1
-      return false
-    end
-
-    return false
-  else
-    -- if (any_input() and played_cancel == false) played_cancel = true; sfx(8)
-  end
-
-  return true
-end
-
+--- update cycle ---
 function _update()
-  if (player.life <= 0) then
-    take_input(true)
-    do_turn()
-    return
-  end
-
-  if (not take_input(false)) return
-  do_turn()
-end
-
-function pick_up_items()
-  for i in all(items) do
-    if cmp_pos(player.pos, i.pos) then
-      inventory[i.pattern] = inventory_max[i.pattern]
-      equipped = i.pattern
-      del(items, i)
-    end
+  act = take_input()
+  if act then
+    add(input_queue, act)
   end
 end
+-- press a direction to move
 
-function tile_shift(actor)
-  apos = act_pos(actor)
-  if (not cmp_pos(apos, actor.pos)) return {x = (apos.x - actor.pos.x) * frame * 2, y = (apos.y - actor.pos.y) * frame * 2}
-  return {x=0, y=0}
+--- / inter-level storage globals ----
+--------------------------------------
+--- checkpoint storage globals ---
+player = nil
+
+actors = {} -- global list of actors
+objects = {} -- global list of objects
+relays = {} -- global list of relays (checkpoints)
+doors = {} -- global list of doors
+
+mset_restore = {} -- we use mset to replace the map while it's in play, so we store a list of replaced tiles to put back when the level is reset
+-- mset_restore format: {position_vector,tile} (referred to as [1],[2])
+--- / checkpoint storage globals ---
+--------------------------------------
+
+-- on init, simply load the first level.
+function _init()
+  load_level(1)
 end
 
-function sprite_for(actor)
-  if (actor.life <= 0) then
-    if (actor.death_frames > 0) then
-      return sprites[actor.pattern][5][(4 - actor.death_frames) + 1]
-    else
-      if (actor.fall_frames > 0) then
-        return sprites[actor.pattern][6][(2 - actor.fall_frames) + 1]
-      end
-    end
+-- load a level.
+function load_level(l)
+  restore_msets(l)
 
-    if (actor.life == -2 or is_water(actor.pos)) then -- disappeared
-      return 255
-    end
-
-    return sprites[actor.pattern][5][4]
-  end
-
-  if (actor == player and is_water(actor.pos) and is_water(act_pos(actor))) return 14
-
-  if (actor.blast_pos != nil) then
-    return sprites[actor.pattern][actor.facing + 1][8]
-  end
-
-  if (actor.hurt_frames > 0) then
-    return sprites[actor.pattern][5][(2 - actor.hurt_frames) + 1]
-  end
-
-  if (actor.stunned_turns > 0) then
-    return sprites[actor.pattern][8][(frame % 2) + 1]
-  end
-
-  if (turn_start != nil) then
-    if (actor.act.a != 0x00 and (actor.id == player.id and equipped == "c4")) return sprites[actor.pattern][actor.facing+1][6]
-    if (actor.act.a != 0x00 and (actor.id != player.id or equipped == "socom")) return sprites[actor.pattern][actor.facing+1][7]
-    if (actor.act.d > -1) return sprites[actor.pattern][actor.facing+1][frame+1]
-  end
-
-  if (actor.facing == -1) return sprites[actor.pattern][1][1]
-  return sprites[actor.pattern][actor.facing+1][1]
-end
-
-function pal_swap(actor)
-  s = tile_shift(actor)
-  palswap = enemy_variants[actor.pattern][actor.variant][2]
-  pal(palswap[1], palswap[2])
-  spr(sprite_for(actor), actor.pos.x*8 + s.x, actor.pos.y*8 + s.y)
-  pal(palswap[1], palswap[1])
-end
-
-function draw_actors()
-  -- draw dead and stunned enemy_variants first
-  for actor in all(actors) do
-    if (actor.life <= 0 or actor.stunned_turns > 0) then
-      if (actor.pattern != "player") then
-        pal_swap(actor)
-      end
-    end
-  end
-
-  for actor in all(actors) do
-    if (actor.life > 0) then
-      if (actor.pattern != "player") then
-        pal_swap(actor)
-      end
-    end
-  end
-
-  -- draw the player
-  s = tile_shift(player)
-  spr(sprite_for(player), player.pos.x*8 + s.x, player.pos.y*8 + s.y)
-end
-
-function draw_lasers()
-  for actor in all(actors) do
-    if (actor.act.a == 0x01) then
-      d = actor.act.d
-      if (d == -1) d = actor.facing
-      tiles = collect_tile_line(actor, d, true, false)
-      for tile in all(tiles) do
-        if (actor != player or inventory["socom"] > -1 and equipped == "socom") spr(sprites[actor.pattern][7][d % 2 + 1], tile.x*8, tile.y*8)
-      end
-      -- if (actor == player and equipped == "socom" and inventory["socom"] > 1) then
-      --   spr(46, tiles[1].x*8, tiles[1].y*8)
-      --   spr(47, tiles[#tiles].x*8, tiles[#tiles].y*8)
-      -- end
-    end
-
-    if (actor.laser_frames > 0) then
-      for tile in all(actor.laser_tiles) do
-        if (actor != player or inventory["socom"] > -1 and equipped == "socom") then
-          if (actor.laser_frames == 1) pal(8,2); pal(11,3)
-          spr(sprites[actor.pattern][7][actor.laser_direction % 2 + 1], tile.x*8, tile.y*8)
-          spr(sprites[actor.pattern][7][actor.laser_direction % 2 + 1], tile.x*8 + (actor.laser_direction % 2), tile.y*8 + (1 - actor.laser_direction % 2))
-          pal(8,8)
-          pal(11,11)
-        end
+  for y = 0, levels[l][4] - 1, 1 do
+    for x = 0, levels[l][3] - 1, 1 do
+      local v = make_vec2d(x, y)
+      local t = lmapget(v, l)
+      local o = get_tile_pattern(t)
+      if (o) then
+        add(mset_restore, {v, t})
+        lmapset(v, l, make_object_from_map(v, o))
       end
     end
   end
 end
 
-function draw_idle_ui()
-  if (idle_start != nil) then
-    f = false
-    if (frame > 3) f = true
-    if (f) pal(7,10)
-    if (input_act == 0x01) pal(7,8)
-    if (input_act == 0x10) pal(7,3)
-    spr(159, player.pos.x * 8, (player.pos.y - 1) * 8)
-    pal(7,7)
-  end
+-- make_object_from_map makes objects ready to start the level from what's on the pico8 map.
+-- it returns the code to replace it with on the map.
+-- o is passed from get_tile_pattern
+function make_object_from_map(v, o)
+  local pattern = o[1]
+  if (pattern == "trapdoor") t = make_object(pattern, v); add(objects, t); return sprite_store.void
+  if (pattern == "player") p = make_actor("player", v, o[2], 3); player = p
+  if (pattern == "actor") a = make_actor("actor", v, o[2]); add(actors, a)
+  return sprite_store.floor
 end
 
-function draw_movement_ui()
-  if (temp_action != nil and temp_action.a == 0x00 and temp_action.d != -1 and idle_start != nil) then
-    ap = to_pos(temp_action.d)
-    fp = {x = player.pos.x + ap.x, y = player.pos.y + ap.y}
-    pal(8, 11)
-    spr(46, fp.x * 8, fp.y * 8)
-    spr(sprites["objects"]["blood_prints"][temp_action.d+1], fp.x * 8, fp.y * 8)
-    pal(8, 8)
-  end
-end
-
-function draw_gloves_ui()
-  if (temp_action == nil) return
-  if (idle_start != nil and temp_action.a == 0x01 and equipped == "gloves") then
-    d = temp_action.d
-    if (d == -1) d = player.facing
-    ap = to_pos(d)
-    fp = {x = player.pos.x + ap.x, y = player.pos.y + ap.y}
-    spr(31, fp.x * 8, fp.y * 8)
-  end
-end
-
-
-function draw_gun_ui()
-  if (temp_action == nil) return
-  if (idle_start != nil and temp_action.a == 0x01 and equipped == "socom") then
-    d = temp_action.d
-    if (d == -1) d = player.facing
-    ap = to_pos(d)
-    fp = {x = player.pos.x + ap.x, y = player.pos.y + ap.y}
-    spr(47, fp.x * 8, fp.y * 8)
-  end
-end
-
-
-function draw_death_ui()
-  print("game over.", 47, 57, 2)
-  print("game over.", 46, 58, 8)
-  print("restart? press z+x", 28, 76, 5)
-  print("restart? press z+x", 27, 77, 7)
-end
-
-function draw_c4_ui()
-  if (temp_action == nil) return
-  if (idle_start != nil and temp_action.a == 0x01 and equipped == "c4") then
-    d = temp_action.d
-    if (d == -1) d = player.facing
-    ap = to_pos(d)
-    fp = {x = player.pos.x + ap.x, y = player.pos.y + ap.y}
-    spr(43, fp.x * 8, fp.y * 8)
-  end
-end
-
-function draw_restart_ui()
-  if (temp_action == nil) return
-  if (idle_start != nil and btn(4) and btn(5)) then
-    print("restart?", 49, 65, 5)
-    print("restart?", 48, 66, 7)
-    l = 2 - flr(time() - restart_time)
-    if (time() - restart_time >= 2) then
-      print("release!", 51, 73, 2)
-      print("release!", 50, 74, 8)
+-- get_tile_pattern returns a more detailed object to make a tile out of,
+-- or nil if there is nothing to make here.
+-- the returned object is passed to make_object_from_map
+function get_tile_pattern(tile)
+  for k, o in pairs(map_store) do
+    if not check_type(o, "table") then
+      if (o == tile) return {k, o}
     else
-      print(tostr(l), 63, 73, 2)
-      print(tostr(l), 62, 74, 8)
-    end
-  end
-end
-
-function object_spr(o, i)
-  spr(sprites["objects"][o.pattern][i], o.pos.x*8, o.pos.y*8)
-end
-
-function draw_objects()
-  for o in all(scanners) do
-    if (o.player_allowed or o.unlocked) then
-      object_spr(o, 2)
-    else
-      object_spr(o, 1)
-    end
-  end
-
-  for t in all(trapdoors) do
-    if (t.active) then
-      object_spr(t, 1)
-    else
-      object_spr(t, 2)
-    end
-  end
-
-  for m in all(multilocks) do
-    if (m.active) then
-      object_spr(m, 2)
-    else
-      if (m.player_allowed) then
-        object_spr(m, 3)
-      else
-        object_spr(m, 1)
+      for f, i in pairs(o) do
+        if (i == tile) return {k, f}
       end
     end
   end
-
-  for g in all(goals) do
-    object_spr(g, 1)
-  end
-
-  for r in all(rations) do
-    object_spr(r, 1)
-  end
-
-  for k in all(keycards) do
-    object_spr(k, 1)
-  end
+  return nil
 end
 
-function draw_above_prints_objects()
-  for o in all(doors) do
-    spr(sprites["objects"][o.pattern][o.facing + 1][o.open + 1], o.pos.x*8, o.pos.y*8)
+-- restore replaced map tiles
+function restore_msets(l)
+  for m in all(mset_restore) do
+    mset(m[1].x + levels[l][1], m[1].y + levels[l][2], m[2])
   end
 
-  for o in all(multidoors) do
-    spr(sprites["objects"][o.pattern][o.facing + 1][o.open + 1], o.pos.x*8, o.pos.y*8)
-  end
-
-  for o in all(keydoors) do
-    spr(sprites["objects"][o.pattern][o.facing + 1][o.open + 1], o.pos.x*8, o.pos.y*8)
-  end
-
-  for r in all(relays) do
-    spr(sprites["objects"][r.pattern][r.active + 1], r.pos.x*8, r.pos.y*8)
-  end
+  mset_restore = {}
 end
 
-function draw_items()
-  for i in all(items) do
-    spr(sprites["items"][i.pattern], i.pos.x*8, i.pos.y*8)
-  end
-
-  for i in all(c4s) do
-    if (is_wall(i.pos) or is_glass(i.pos)) then
-      spr(171, i.pos.x*8, i.pos.y*8)
-    else
-      spr(170, i.pos.x*8, i.pos.y*8)
-    end
-  end
+function lmapget(v, l)
+ return mget(v.x + levels[l][1], v.y + levels[l][2])
 end
 
-function draw_explosions()
-  for e in all(explosions) do
-    if (e.frames > 0) spr(sprites["effects"]["explosion"][(4 - e.frames) + 1], e.pos.x * 8, e.pos.y * 8)
-  end
+function lmapset(v, l, tile)
+  mset(v.x + levels[l][1], v.y + levels[l][2], tile)
 end
 
-function draw_prints()
-  for o in all(prints) do
-    spr(sprites["objects"][o.pattern][o.facing + 1], o.pos.x*8, o.pos.y*8)
-  end
-end
-
-function draw_socom()
-  spr(155, 110, 118)
-  spr(156, 118, 118)
-
-  for i = 0, (3 - inventory["socom"]), 1 do
-    draw_socom_bullet(117+i*2,120, 5)
-  end
-end
-
-function draw_c4()
-  spr(157, 110, 118)
-  spr(158, 118, 118)
-
-  for i = 0, (1 - inventory["c4"]), 1 do
-    draw_c4_bullet(119+i*3,120, 5)
-  end
-end
-
-function draw_hands()
-  spr(139, 118, 118)
-end
-
-function draw_socom_bullet(x,y,c)
-  pset(x,y,c)
-  pset(x,y+1,c)
-  pset(x,y+3,c)
-end
-
-function draw_c4_bullet(x,y,c)
-  pset(x,y,c)
-  pset(x,y+1,c)
-  pset(x,y+3,c)
-
-  pset(x+1,y,c)
-  pset(x+1,y+1,c)
-  pset(x+1,y+3,c)
-end
-
-function draw_blood_ui()
-  spr(143, 112, 3)
-  print(player.blood_prints, 121, 4, 7)
-end
-
-function draw_keycard_ui()
-  spr(185, 85, 3)
-  print("lv."..keycard, 93, 4, 7)
-end
-
-function draw_ui()
-  -- draw action symbols
-
-  --draw health bar
-  rect(2,2,player.max_life * 5 + 3,7,6)
-  rectfill(3,3,player.max_life * 5 + 2,6,2)
-  if (player.life > 0) rectfill(3,3,player.life * 5 + 2,6,3)
-  print("life", 4, 6, 7)
-
-  -- draw o2 bar
-  if (is_water(player.pos)) then
-    rect(2,13,player.max_o2 * 5 + 3,18,6)
-    rectfill(3,14,player.max_o2 * 5 + 2,17,1)
-    if (player.o2 > 0) rectfill(3,14,player.o2 * 5 + 2,17,12)
-    print("o2", 4, 17, 7)
-  end
-
-  -- draw item use.
-  if (temp_action != nil and temp_action.a == 0x10) then
-
-  else
-    if (equipped == "socom") draw_socom()
-    if (equipped == "gloves") draw_hands()
-    if (equipped == "c4") draw_c4()
-  end
-
-  if (player.blood_prints >= 1) draw_blood_ui()
-  if (keycard > 0) draw_keycard_ui()
-
-  -- nice little window border
-  rect(0,0,127,127,5)
-end
+------------------
+--- draw cycle ---
+------------------
 
 function _draw()
   cls()
-  l = levels[level]
-  a = act_pos(player)
-  if cmp_pos(player.pos, a) then
-    camera((player.pos.x * 8) - 60, (player.pos.y * 8) - 64)
-  else
-    xd = a.x - player.pos.x
-    yd = a.y - player.pos.y
-    camera((xd * biframe) + (player.pos.x * 8) - 60, (yd * biframe) + (player.pos.y * 8) - 64)
+
+  if (not player) return
+
+  local p = to_pixel(player.pos)
+
+  -- center camera
+  camera(p.x - 60, p.y - 64)
+
+  -- draw map
+  map(0, 0, 0, 0, 32, 30)
+
+  -- draw everything else
+  local draws = concat(objects, actors)
+  add(draws, player)
+
+  for o in all(draws) do
+    o.draw(o)
   end
-  map(l[1], l[2], 0, 0, l[3], l[4])
-  draw_objects()
-  draw_prints()
-  draw_above_prints_objects()
-  draw_items()
-  draw_actors()
-  draw_explosions()
-  if (player.life > 0) then
-    draw_movement_ui()
-    draw_gun_ui()
-    draw_gloves_ui()
-    draw_c4_ui()
-    draw_idle_ui()
+
+  -- debug
+  if input_dir > 0 and input_act > 0 then
+    local ui = to_pixel(dir_to_vec(input_dir) + player.pos)
+    spr(sprite_store.select, ui.x, ui.y)
   end
-  draw_lasers()
-  camera(0, 0)
-  if (player.life <= 0) then
-    draw_death_ui()
-  else
-    draw_restart_ui()
+
+  if (input_act == 5) spr(57, p.x, p.y)
+  if (input_act == 6) spr(56, p.x, p.y)
+
+  camera(0,0)
+
+  -- debug draw input queue
+  for k, i in pairs(input_queue) do
+    local y = 125 - k * 9
+    spr(62,0,y)
+    if (i[1] < 5) spr(i[2] + 57, 8,y); spr(63,15,y)
+    if (i[1] > 4) spr(62 - i[1], 8,y); spr(i[2] + 57, 15,y); spr(63,27,y)
   end
-  draw_ui()
+
+  -- window border
+  rect(0,0,127,127,5)
+
+  -- draw action ui
 end
+
+-- concat tables
+function concat(t1,t2)
+    local t3 = {}
+    for i=1,#t1 do
+        t3[i] = t1[i]
+    end
+    for i=1,#t2 do
+        t3[#t1+i] = t2[i]
+    end
+    return t3
+end
+
+--- types ---
+local actormt = {}
+local objectmt = {}
+local vecmt = {}
+
+function make_actor(pattern, pos, facing, life)
+  local t = make_object(pattern, pos, facing)
+  life = life or 1
+
+  -- game data
+  t.life = life
+  t.max_life = life
+  t.act = 0
+
+  setmetatable(t, actormt)
+  return t
+end
+
+function make_object(pattern, pos, facing)
+  local t = {
+    pattern = pattern,
+    pos = pos,
+    facing = facing or 1
+  }
+
+  setmetatable(t, objectmt)
+  return t
+end
+
+local methods = {}
+function methods.draw(self)
+  local p = to_pixel(self.pos)
+  spr(sprite_for(self.pattern, self.facing), p.x, p.y)
+end
+
+objectmt.__index = methods
+actormt.__index = methods
+
+-- for converting a direction to a position change
+pos_map = {{0,1,0,-1}, {-1,0,1,0}}
+
+function dir_to_vec(dr)
+  return make_vec2d(pos_map[1][dr], pos_map[2][dr])
+end
+
+-- function to create a new vector
+function make_vec2d(x, y)
+    local t = {
+        x = x,
+        y = y
+    }
+    setmetatable(t, vecmt)
+    return t
+end
+
+function vecmt.__add(a, b)
+    return make_vec2d(
+        a.x + b.x,
+        a.y + b.y
+    )
+end
+
+function vecmt.__sub(a, b)
+    return make_vec2d(
+        a.x - b.x,
+        a.y - b.y
+    )
+end
+
+function vecmt.__eq(a, b)
+    return a.x == b.x and a.y == b.y
+end
+
+-- convert vector to screen pixel
+function to_pixel(vec)
+  return make_vec2d(vec.x * 8, vec.y * 8)
+end
+
 __gfx__
 00000000000000000000000000000000441444400000000000000000000000000000010080000000080000000000000000000000000000000000000000000000
 0000000000444400000000000104444000411110010444400000000004444000004444100e044400000e08000000000000000000000000000000000000000000
@@ -1719,32 +428,32 @@ __gfx__
 00000000000000000000000000000000000001008000000008000000000000000000000000000000000000000000000000000000000000000000000000000000
 00555500000000000005555005555000000555100e055500000e0800000000000022220000000000000000000000000000000000000000000000000000000000
 05555500005555000055555055555000005855508883115000808e80000000000222220000000000000000000000000000000000000000000000000000000000
-05f3f30005555500005f3f305f3f3000003f3f500e8ef350100388550000000002f8f80000000000000000000000000000000000000000000000000000000000
-05ffff0005f3f300000ffff00fff55600888fff01888f550108e8f55000388e502ffff0000000000000000000000000000000000000000000000000000000000
-00111000001fff0000f11f000111f5000081110005811080051ff35580e883880033000000000000000000000000000000000000000000000000000000000000
+02f3f30005555500002f3f302f3f3000003f3f200e8ef350100388550000000002f8f80000000000000000000000000000000000000000000000000000000000
+05ffff0002f3f300000ffff00fff55600888fff01888f520108e8f55000388e502ffff0000000000000000000000000000000000000000000000000000000000
+00111000001fff0000f11f000111f5000081110005811080051ff32580e883880033000000000000000000000000000000000000000000000000000000000000
 0f555f0000111f0000155000055500000f0551008058000805111e801188ff850f66f00000000000000000000000000000000000000000000000000000000000
-0010100000f110000000010001010000000001000011000000f110e811f885500010100000000000000000000000000000000000000000000000000000000000
+0010100000f110000000010001010000000001000011000000f110e811f882500010100000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000006000007060007800000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00555000000000000055500000055500070555000555500000555000000555500000000000000000000000000000000000000000000000000000000000000000
 05555500000555000555550000555550705555505555507005555570070555550000000000000000000000000000000000000000000000000000000000000000
-05555500005555500555550000555550705555505f3f3007053f35077003f3f50000000000000000000000000000000000000000000000000000000000000000
-00fff000005555500ffff00000f555f000f555000ffff00705fff107700ffff00000000000000000000000000000000000000000000000000000000000000000
+05555200005555500555520000555520705555202f3f3007023f35077003f3f20000000000000000000000000000000000000000000000000000000000000000
+00fff000005555200ffff00000f555f000f555000ffff00705fff107700ffff00000000000000000000000000000000000000000000000000000000000000000
 001110000001110000511000001111f0001111f001111f55011ff66055f111100000000000000000000000000000000000000000000000000000000000000000
 0f555f00000555f00015500000055500000555000555000000555000000055500000000000000000000000000000000000000000000000000000000000000000
 0010100000f1110000100f0000010100000101000101000000101000000010100000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0055550000000000005555000055500000a90a0000a09a0000000000000000000000000000000000000000000000000000000000000000000000000000000000
 05555550005555000555555005555500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-05f3f3500555555005f3f350053f3500000f3550000f355000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00ffff0005f3f3500fffff00056ff10000fff55000fff55000555500000000000000000000000000000000000000000000000000000000000000000000000000
+02f3f3500555555002f3f350023f3500000f3550000f355000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00ffff0002f3f3500fffff00056ff10000fff55000fff55000555500000000000000000000000000000000000000000000000000000000000000000000000000
 00111000001fff000011110000f11100051f3550051f3550055f550f00000f000000000000000000000000000000000000000000000000000000000000000000
-0f555f0000111f00001550f000555000151ff550151ff55005f5f305000005000000000000000000000000000000000000000000000000000000000000000000
-0010100000f51000001000000010100011f0550011f0550005f5ff05000005000000000000000000000000000000000000000000000000000000000000000000
+0f555f0000111f00001550f000555000151ff550151ff55002f5f305000005000000000000000000000000000000000000000000000000000000000000000000
+0010100000f51000001000000010100011f0250011f0250005f5ff05000005000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00555500000000000555500000055550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00555550005555000555550000055555000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-003f3f500055555003f3f5000003f3f5000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00ffff00003f3f500ffff0000655fff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+003f3f200055555003f3f2000003f3f2000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00ffff00003f3f200ffff0000655fff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0001110000fff10000f11f00005f1110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00f555f000f111000005510000005550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0001010000011f000010000000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
