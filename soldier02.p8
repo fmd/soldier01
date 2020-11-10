@@ -1,5 +1,5 @@
 pico-8 cartridge // http://www.pico-8.com
-version 16
+version 29
 __lua__
 
 -- facing guide: 0=none, 1=up, 2=right, 3=down, 4=left
@@ -11,69 +11,66 @@ __lua__
 sprite_store = { floor = 128,
                  void = 255,
                  select = 46,
+                 ration = 180,
                  trapdoor = {176, 177},
-                 player = {1,17,33,49},
-                 actor = {208,192,224,240} }
+                 player = {17,1,33,49}, -- up, right, down (left should be flipped)
+                 enemy = {208,192,224,240} } -- up, right, down (left shoudl be flipped)
 
-function sprite_for(pattern, i)
-  local s = sprite_store[pattern]
-  if (not check_type(s, "table")) return s
-  return s[i]
-end
-
-function check_type(v, t)
-  return type(v) == t
-end
+animations = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/shoot/fly)
+                        {1,2,3,2,5,6,7,4},        -- east (last three=roll/shoot/fly)
+                        {33,34,35,34,37,38,39,36}, -- south (last three=roll/shoot/fly)
+                        {49,50,51,50,53,54,55,52}, -- west (last three=roll/shoot/fly) THESE SHOULD ALWAYS BE RIGHT FLIPPED
+                        {8,9,10,11}, -- death
+                        {12, 13}, -- fall
+                        {25, 24}}, -- laser
+                enemy = {{208,209,210,209,210,211,211,1}, -- north (last two=roll/shoot/fly)
+                         {192,193,194,193,194,195,195,1}, -- east (last two=roll/shoot/fly)
+                         {224,225,226,225,226,227,227,1}, -- south (last two=roll/shoot/fly)
+                         {240,241,242,241,242,243,243,1}, -- west (last two=roll/shoot/fly)
+                         {196,197,198,199}, -- death
+                         {230, 231}, -- fall
+                         {41, 40}, -- laser
+                         {228, 229}}} -- stunned
 
 -- global object sprite-on-map store
-map_store = { player = {1,17,33,49},
-              actor = {208,192,224,240},
-              trapdoor = 176 }
+map_store = { player = {17,1,33,49},
+              enemy = {208,192,224,240},
+              trapdoor = 176,
+              ration = 180 }
 
--- global level-on-map store
-levels = {{0,0,32,30}}
+-- enemy variants data
+enemy_variants = {enemy = {{"clockwise", {5, 5}}, -- variant 1
+                           {"line", {5, 2}}, -- variant 2
+                           {"still", {5, 13}} }}  -- variant 3
+
+-- misc global vars
+current_level, turn, chunk, frame, biframe = 0,0,0,1,1
+global_time, turn_start = nil, nil
 
 --- / global level and sprite data ---
 --------------------------------------
 --- inter-level storage globals ------
 ---  (these persist between resets)
 
+input_act, input_dir, input_down = 0, 0, {false,false,false,false,false,false}
+
+-- global level-on-map store
+-- edity vars
+levels = {{0,0,4,4},{5,5,32,30}}
+
 current_items = { gloves = 0,
                   socom  = 0,
                   c4     = 0 }
 
-input_act, input_dir, input_queue, input_down = 0,0, {}, {false,false,false,false,false,false}
-
--- i here corresponds to immediate_input
--- function btnpress(i)
---   if input_act > 4 then
---     if i > 4 then
---       input_act = i
---     else
---       input_dir = i
---     end
---   else
---     input_act = i
---     if (i < 5) input_dir = i
---   end
--- end
-
-function any_directional_input(d)
-  return d[1] or d[2] or d[3] or d[4]
-end
-
 function btnpress(i)
   if i > 4 then
     input_act = i
+    if (input_dir == 0) input_dir = player.facing
   else
     input_dir = i
-    if (input_act < 5) input_act = i
+    if (input_act < 5) input_act = 1
   end
-end
-
-function btnrelease(i)
-  if (input_act == i) return {input_act, input_dir}
-  return nil
+  -- printh("btnpress("..i..") = {"..input_act..","..input_dir.."}")
 end
 
 function take_input()
@@ -83,28 +80,66 @@ function take_input()
     if immediate_input[i] and not input_down[i] then
       input_down[i] = true
       btnpress(i)
-    else
-      if not immediate_input[i] and input_down[i] then
-        input_down[i] = false
-        taken_act = btnrelease(i)
-        if taken_act then
-          input_act = 0
-          return taken_act
-        end
-      end
+    elseif not immediate_input[i] and input_down[i] then
+      input_down[i] = false
+      temp_act = input_act
+      if (input_act == i or (input_dir == i and input_act == 1)) input_act = 0; return {temp_act, input_dir}
     end
   end
 
   return nil
 end
 
+function cut_chunk(c, v, m)
+  return mid(1, flr(c / v) + 1, m)
+end
+
+function update_frame()
+  chunk = flr((time() - global_time) * 400)
+  frame = cut_chunk(chunk, 100, 4)
+  biframe = cut_chunk(chunk, 50, 8)
+end
+
 --- update cycle ---
-function _update()
-  act = take_input()
-  if act then
-    add(input_queue, act)
+function _update60()
+  update_frame()
+
+  if (turn_start) then
+    if (chunk > 399) end_turn()
+    return
+  end
+
+  player.input_act = take_input()
+  if (not player.input_act) return
+  start_turn(); player.input_act = nil;
+end
+
+function start_turn()
+  for actor in all(actors) do
+    actor:determine_act()
+    actor:turn_to_face_act()
+  end
+
+  turn += 1
+  global_time = time()
+  turn_start = time()
+
+  update_frame() -- update frame here so we don't get a ghost drawing
+end
+
+function end_turn()
+  turn_start = nil
+  global_time = time()
+
+  for a in all(actors) do
+    a:attempt_act()
+  end
+
+  for o in all(objects) do
+    o:activate()
   end
 end
+
 -- press a direction to move
 
 --- / inter-level storage globals ----
@@ -129,6 +164,8 @@ end
 
 -- load a level.
 function load_level(l)
+  current_level = l
+  global_time = time()
   restore_msets(l)
 
   for y = 0, levels[l][4] - 1, 1 do
@@ -149,9 +186,10 @@ end
 -- o is passed from get_tile_pattern
 function make_object_from_map(v, o)
   local pattern = o[1]
+  if (pattern == "ration") r = make_object(pattern, v); add(objects, r)
   if (pattern == "trapdoor") t = make_object(pattern, v); add(objects, t); return sprite_store.void
-  if (pattern == "player") p = make_actor("player", v, o[2], 3); player = p
-  if (pattern == "actor") a = make_actor("actor", v, o[2]); add(actors, a)
+  if (pattern == "player") p = make_actor("player", v, o[2], 3); player = p; add(actors, p)
+  if (pattern == "enemy") a = make_actor("enemy", v, o[2]); add(actors, a)
   return sprite_store.floor
 end
 
@@ -181,11 +219,24 @@ function restore_msets(l)
 end
 
 function lmapget(v, l)
- return mget(v.x + levels[l][1], v.y + levels[l][2])
+  l = l or current_level
+  return mget(v.x + levels[l][1], v.y + levels[l][2])
 end
 
 function lmapset(v, l, tile)
   mset(v.x + levels[l][1], v.y + levels[l][2], tile)
+end
+
+------------------
+--- behaviours ---
+------------------
+function is_wall(pos)
+  m = lmapget(pos)
+  return (m >= 64 and m <= 127)
+end
+
+function is_water(pos)
+  return lmapget(pos) == 182
 end
 
 ------------------
@@ -196,14 +247,14 @@ function _draw()
   cls()
 
   if (not player) return
-
   local p = to_pixel(player.pos)
 
   -- center camera
-  camera(p.x - 60, p.y - 64)
+  camera(p.x - 56, p.y - 56)
 
   -- draw map
-  map(0, 0, 0, 0, 32, 30)
+  --map(0, 0, 0, 0, 32, 30)
+  draw_map()
 
   -- draw everything else
   local draws = concat(objects, actors)
@@ -213,29 +264,40 @@ function _draw()
     o.draw(o)
   end
 
-  -- debug
+  -- debug ui
   if input_dir > 0 and input_act > 0 then
     local ui = to_pixel(dir_to_vec(input_dir) + player.pos)
-    spr(sprite_store.select, ui.x, ui.y)
+    zspr(sprite_store.select, ui.x, ui.y, 2)
   end
 
-  if (input_act == 5) spr(57, p.x, p.y)
-  if (input_act == 6) spr(56, p.x, p.y)
+  -- debug action
+  if (input_act == 5) zspr(57, p.x, p.y, 2)
+  if (input_act == 6) zspr(56, p.x, p.y, 2)
 
   camera(0,0)
 
-  -- debug draw input queue
-  for k, i in pairs(input_queue) do
-    local y = 125 - k * 9
-    spr(62,0,y)
-    if (i[1] < 5) spr(i[2] + 57, 8,y); spr(63,15,y)
-    if (i[1] > 4) spr(62 - i[1], 8,y); spr(i[2] + 57, 15,y); spr(63,27,y)
-  end
+  -- debug frame ui
+  -- print(frame.." "..biframe.." "..chunk, 10,10)
+
+  -- health bar
+  -- printh(player.life .. " " .. player.max_life .. " " .. player.o2 .. " " .. player.max_o2)
+  draw_bar("life", player.life, player.max_life, 3, 2, 0)
+  if (player:in_water()) draw_bar("o2", player.o2, player.max_o2, 12, 1, 1)
+  -- draw_bar("boss", 5, 7, 9, 4, 2)
 
   -- window border
   rect(0,0,127,127,5)
+end
 
-  -- draw action ui
+function draw_map()
+  for y = levels[current_level][2], levels[current_level][4] - 1, 1 do
+    for x = levels[current_level][1], levels[current_level][3] - 1, 1 do
+      local v = make_vec2d(x, y)
+      local pp = to_pixel(v)
+      local tile = lmapget(v)
+      if (tile > 0) zspr(tile, pp.x, pp.y, 2)
+    end
+  end
 end
 
 -- concat tables
@@ -250,23 +312,35 @@ function concat(t1,t2)
     return t3
 end
 
+-- sprite sheet n to vector position
+function n_to_vec(n)
+  return make_vec2d(8 * (n % 16), 8 * flr(n / 16))
+end
+
+-- zoomed sprite
+function zspr(n,dx,dy,dz,w,h,ssw,ssh)
+  local v = n_to_vec(n)
+  w = w or 1
+  h = h or 1
+  ssw = ssw or 8
+  ssh = ssh or 8
+  sw, sh = ssw * w, ssh * h
+  dw, dh = sw * dz, sh * dz
+  sspr(v.x,v.y,sw,sh,dx,dy,dw,dh)
+end
+
 --- types ---
 local actormt = {}
 local objectmt = {}
 local vecmt = {}
 
-function make_actor(pattern, pos, facing, life)
-  local t = make_object(pattern, pos, facing)
-  life = life or 1
+local objectMethods = {}
+local actorMethods = {}
+local vectorMethods = {}
 
-  -- game data
-  t.life = life
-  t.max_life = life
-  t.act = 0
-
-  setmetatable(t, actormt)
-  return t
-end
+----------------------
+--- OBJECT METHODS ---
+----------------------
 
 function make_object(pattern, pos, facing)
   local t = {
@@ -275,18 +349,254 @@ function make_object(pattern, pos, facing)
     facing = facing or 1
   }
 
-  setmetatable(t, objectmt)
+  mt = copymt(objectmt)
+  if (pattern == "trapdoor") make_trapdoor(t, mt)
+
+  if (pattern == "ration") then
+    function mt.__index.activate(self)
+      -- printh("Ration Activated")
+    end
+  end
+
+  setmetatable(t, mt)
   return t
 end
 
-local methods = {}
-function methods.draw(self)
-  local p = to_pixel(self.pos)
-  spr(sprite_for(self.pattern, self.facing), p.x, p.y)
+function make_trapdoor(t, mt)
+  t.timer = false
+  -- t.facing = 1 -- use facing instead of "active" for trapdoors to save tokens. 1 = set, 2 = open
+  function mt.__index.activate(self)
+    if (self.timer) self.timer = false; self.facing = 2; sfx(13)
+
+    a = self.pos:actor_on_here()
+    if (not a) return
+
+    if (self.facing == 1) sfx(11); self.timer = true; return
+    sfx(5)
+    -- TODO: kill actor here
+    player.life -= 1
+  end
 end
 
-objectmt.__index = methods
-actormt.__index = methods
+function default_sprite(pattern, facing)
+  local s = sprite_store[pattern]
+  if (not check_type(s, "table")) return s
+  return s[facing]
+end
+
+function objectMethods.sprite(self)
+  return default_sprite(self.pattern, self.facing)
+end
+
+function objectMethods.draw(self)
+  local p = to_pixel(self.pos)
+  zspr(self:sprite(), p.x, p.y, 2)
+end
+
+function objectMethods.activate(self)
+  -- printh("Generic object!")
+end
+
+objectmt.__index = objectMethods
+
+---------------------
+--- ACTOR METHODS ---
+---------------------
+
+function make_actor(pattern, pos, facing, life)
+  local t = make_object(pattern, pos, facing)
+  life = life or 1
+
+  -- game data
+  t.life, t.max_life, t.o2, t.max_o2 = life, life, life, life
+  t.aquatic = false
+  t.variant = 2
+  -- see input acts and directions
+  t.act = {0, 0}
+  -- player changes
+  mt = copymt(actormt)
+  if (pattern == "player") make_player(t, mt)
+
+  setmetatable(t, mt)
+  return t
+end
+
+function make_player(t, mt)
+  t.aquatic = true
+  function mt.__index.determine_act(self)
+    self.act = copymt(self.input_act)
+  end
+end
+
+function actorMethods.act_pos(self)
+  local a = self.act[1]
+  local d = self.act[2]
+  -- printh("act "..a.." : "..d)
+
+  if (d == 0) return self.pos
+  check_point = self.pos + dir_to_vec(d)
+
+  if a == 1 then
+    if (not is_wall(check_point) and (not is_water(check_point) or self.aquatic)) return check_point
+  end
+
+  return self.pos
+end
+
+function actorMethods.in_water(self)
+  return is_water(self.pos) and is_water(self:act_pos())
+end
+
+function actorMethods.turn_to_face_act(self)
+  if (self.act[2] > 0) self.facing = self.act[2]
+end
+
+function actorMethods.move_type(self)
+  return enemy_variants[self.pattern][self.variant][1]
+end
+
+function actorMethods.determine_act(self)
+  if (self.life <= 0) self.act = {0, 0}; return
+  self.act[1] = 1
+  self.act[2] = self.facing
+  previous_facing = self.facing
+  self:determine_facing()
+
+  -- if player is dead, no need to look
+  if (player.life <= 0) return
+
+  -- with old facing, look for player to shoot
+  tiles = self:tiles_ahead(previous_facing)
+  for k, tile in pairs(tiles) do
+    if (player.pos == tile) then
+      self.act = {2, previous_facing}  -- shoot
+      return
+    end
+  end
+
+  -- with new facing, look again
+  tiles = self:tiles_ahead()
+  for k, tile in pairs(tiles) do
+    if (player.pos == tile) then
+      self.act[1] = 2 -- shoot
+      return
+    end
+  end
+end
+
+function actorMethods.determine_facing(self)
+  mvt = self:move_type()
+  apos = self:act_pos()
+  if (mvt == "clockwise") self.act = {0, 0}; return
+  if (mvt == "still") self.act = {0, 0}; return
+  if (mvt == "line") then
+    if (apos == self.pos) then
+      f = self.facing + 2
+      if (f > 4) f = abs(5 - f) + 1
+      self.act[2], self.facing = f, f
+    end
+  end
+end
+
+function actorMethods.attempt_act(self)
+  a = self.act[1]
+  if (a == 1) self:attempt_move()
+  if (a == 2) self:attempt_shot()
+end
+
+function actorMethods.attempt_move(self)
+  self.pos = self:act_pos()
+end
+
+function actorMethods.attempt_shot(self)
+  sfx(4)
+
+  tiles = {}
+  for i, tile in pairs(self:tiles_ahead(self.act[2], true)) do
+    hurts = {}
+    add(tiles, tile)
+
+    for j, a in pairs(actors) do
+      if (self != a and a.pos == tile and a.life > 0) add(hurts, a)
+    end
+
+    l = #hurts
+    for a in all(hurts) do
+      if (l > 1) then
+        if (a != player and a.life > 0) then
+          a:hurt()
+          -- queue_lasers(actor, a, tiles, actor.act[2])
+          return
+        end
+      else
+        if (l == 1) then
+          a:hurt()
+          -- queue_lasers(actor, a, tiles, actor.act[2])
+          return
+        end
+      end
+    end
+  end
+end
+
+function actorMethods.hurt(self, amount)
+  amount = amount or 1
+  self.life = max(0, self.life - amount)
+  if (self.life == 0) then
+    sfx(5)
+    -- if (not is_water(actor.pos)) actor.death_frames = 4
+  else
+    sfx(5, -1, 1, 3)
+    -- if (not is_water(actor.pos)) actor.hurt_frames = 2
+  end
+end
+
+function actorMethods.tiles_ahead(self, d, ignore_glass)
+  ignore_glass = ignore_glass or false
+  d = d or self.facing
+  p = self.pos + dir_to_vec(d)
+  tx, ty = p.x, p.y
+
+  collected = {}
+  i = 1
+
+  while not (is_wall(p)) do -- TODO: and (not is_glass(p) or not ignore_glass)) do
+    collected[i] = p
+    i += 1
+    p = p + dir_to_vec(d)
+  end
+
+  return collected
+end
+
+function actorMethods.draw(self)
+  local p = to_pixel(self.pos)
+  s = self:tile_shift()
+  ssw, ssh, y_shift = 8, 8, 0
+  if (self:in_water()) ssh = 4; y_shift = 2
+  zspr(self:sprite(), p.x + s.x * 2, p.y + s.y * 2 + y_shift, 2, 1, 1, ssw, ssh)
+end
+
+function actorMethods.sprite(self)
+  if (turn_start != nil) then
+    anim = animations[self.pattern][self.facing]
+    if (self.act[1] == 1) return anim[frame+1]
+    if (self.act[1] == 2) return anim[6]
+  end
+  return default_sprite(self.pattern, self.facing)
+end
+
+function actorMethods.tile_shift(self)
+  apos = self:act_pos()
+  if (not (apos == self.pos) and turn_start) return make_vec2d((apos.x - self.pos.x) * biframe, (apos.y - self.pos.y) * biframe)
+  return make_vec2d(0, 0)
+end
+
+actormt.__index = actorMethods
+
+----------------------
+--- VECTOR METHODS ---
+----------------------
 
 -- for converting a direction to a position change
 pos_map = {{0,1,0,-1}, {-1,0,1,0}}
@@ -303,6 +613,18 @@ function make_vec2d(x, y)
     }
     setmetatable(t, vecmt)
     return t
+end
+
+-- function vectorMethods.debug_print(self, msg)
+--   printh(msg.." ("..self.x..", "..self.y..")")
+-- end
+
+function vectorMethods.actor_on_here(self)
+  if (player.pos == self) return player
+  for a in all(actors) do
+    if (a.pos == self) return a
+  end
+  return nil
 end
 
 function vecmt.__add(a, b)
@@ -323,9 +645,41 @@ function vecmt.__eq(a, b)
     return a.x == b.x and a.y == b.y
 end
 
+vecmt.__index = vectorMethods
+
+-----------------------
+--- UI DRAW METHODS ---
+-----------------------
+function draw_bar(label, current, full, full_color, empty_color, position)
+  barp = position*10
+  rect(2, 2+barp,full * 5 + 3, 7+barp,6)
+  rectfill(3, 3+barp,full * 5 + 2, 6+barp,empty_color)
+  if (current > 0) rectfill(3,3+barp,current * 5 + 2,6+barp,full_color)
+  print(label, 4, 6 + barp, 7)
+end
+
+--- MISC FUNCTIONS ---
+function check_type(v, t)
+  return type(v) == t
+end
+
 -- convert vector to screen pixel
 function to_pixel(vec)
-  return make_vec2d(vec.x * 8, vec.y * 8)
+  return make_vec2d(vec.x * 16, vec.y * 16)
+end
+
+-- metatable copy method
+function copymt(o)
+  local c
+  if type(o) == 'table' then
+    c = {}
+    for k, v in pairs(o) do
+      c[k] = copymt(v)
+    end
+  else
+    c = o
+  end
+  return c
 end
 
 __gfx__
@@ -425,14 +779,14 @@ __gfx__
 0000000000000000000c000050000005003bb300001001001100cc010055b5000055b50000ccccc0000bb0000030030000000000000000000000000000000000
 01000010000000000107101001011c100103301001001001011c0110005555000055550000000000010110100300300300000000000000000000000000000000
 0011110005555550005cc50000100100001001001001001010101000000000000000000000000000001001003003003000000000000000000000000000000000
-00000000000000000000000000000000000001008000000008000000000000000000000000000000000000000000000000000000000000000000000000000000
-00555500000000000005555005555000000555100e055500000e0800000000000022220000000000000000000000000000000000000000000000000000000000
-05555500005555000055555055555000005855508883115000808e80000000000222220000000000000000000000000000000000000000000000000000000000
-02f3f30005555500002f3f302f3f3000003f3f200e8ef350100388550000000002f8f80000000000000000000000000000000000000000000000000000000000
-05ffff0002f3f300000ffff00fff55600888fff01888f520108e8f55000388e502ffff0000000000000000000000000000000000000000000000000000000000
-00111000001fff0000f11f000111f5000081110005811080051ff32580e883880033000000000000000000000000000000000000000000000000000000000000
-0f555f0000111f0000155000055500000f0551008058000805111e801188ff850f66f00000000000000000000000000000000000000000000000000000000000
-0010100000f110000000010001010000000001000011000000f110e811f882500010100000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000001008000000008000000000000000000000000000000000000000000000000000000000000001010101020202020
+00555500000000000005555005555000000555100e055500000e0800000000000022220000000000000000000000000000000000000000000001000100020002
+05555500005555000055555055555000005855508883115000808e80000000000222220000000000000000000000000000000000000000001000100020002000
+02f3f30005555500002f3f302f3f3000003f3f200e8ef350100388550000000002f8f80000000000000000000000000000000000000000000101010102020202
+05ffff0002f3f300000ffff00fff55600888fff01888f520108e8f55000388e502ffff0000000000000000000000000000000000000000001010101020202020
+00111000001fff0000f11f000111f5000081110005811080051ff32580e883880033000000000000000000000000000000000000000000000001000100020002
+0f555f0000111f0000155000055500000f0551008058000805111e801188ff850f66f00000000000000000000000000000000000000000001000100020002000
+0010100000f110000000010001010000000001000011000000f110e811f882500010100000000000000000000000000000000000000000000101010102020202
 00000000000000000000000000006000007060007800000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00555000000000000055500000055500070555000555500000555000000555500000000000000000000000000000000000000000000000000000000000000000
 05555500000555000555550000555550705555505555507005555570070555550000000000000000000000000000000000000000000000000000000000000000
@@ -588,10 +942,10 @@ __label__
 55555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555
 
 __map__
-ffffffffff00ff00000000000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-ffffffffff00ff00000000000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000005465544154546500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+51515151ff00ff00000000000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+5101f051ff00ff00000000000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+51b0b65100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+5151515100005465544154546500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000ff656554b6b5b550b0b5b564000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00007501b654b6b58471b554b554000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000ff65b6b6b654b0b5b054845400000000000000000000000000000000000000ffffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
