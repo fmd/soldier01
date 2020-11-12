@@ -2,169 +2,210 @@ pico-8 cartridge // http://www.pico-8.com
 version 29
 __lua__
 
+-- big TODO: --
+-- reimplementing doors, rations, player items, relays, explosives
+-- Codec & Dialogue
+-- Main menu
+-- Sfx overhaul
+-- Music
+
 -- facing guide: 0=none, 1=up, 2=right, 3=down, 4=left
 -- act guide:    0=still, 1=walk, 2=shoot, 3=change, 4=blast, 5=vault, 6=nil, 7=nil
 
 ------------------------------------
 --- global level and sprite data ---
--- global sprite map
+-- some global handles for commonly used sprites
 sprite_store = { floor = 128,
                  void = 255,
-                 select = 46,
-                 ration = 180,
-                 trapdoor = {176, 177},
-                 player = {17,1,33,49}, -- up, right, down (left should be flipped)
-                 enemy = {208,192,224,240} } -- up, right, down (left shoudl be flipped)
+                 select = 46 }
 
 animations = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/shoot/fly)
-                        {1,2,3,2,5,6,7,4},        -- east (last three=roll/shoot/fly)
-                        {33,34,35,34,37,38,39,36}, -- south (last three=roll/shoot/fly)
-                        {49,50,51,50,53,54,55,52}, -- west (last three=roll/shoot/fly) THESE SHOULD ALWAYS BE RIGHT FLIPPED
-                        {8,9,10,11}, -- death
-                        {12, 13}, -- fall
-                        {25, 24}}, -- laser
+                         {1,2,3,2,5,6,7,4},        -- east (last three=roll/shoot/fly)
+                         {33,34,35,34,37,38,39,36}, -- south (last three=roll/shoot/fly)
+                         {49,50,51,50,53,54,55,52}, -- west (last three=roll/shoot/fly) THESE SHOULD ALWAYS BE RIGHT FLIPPED
+                         {8,9,10,11}, -- death
+                         {12, 13}, -- fall
+                         {25, 24, 25, 24}}, -- laser
+
                 enemy = {{208,209,210,209,210,211,211,1}, -- north (last two=roll/shoot/fly)
                          {192,193,194,193,194,195,195,1}, -- east (last two=roll/shoot/fly)
                          {224,225,226,225,226,227,227,1}, -- south (last two=roll/shoot/fly)
                          {240,241,242,241,242,243,243,1}, -- west (last two=roll/shoot/fly)
                          {196,197,198,199}, -- death
                          {230, 231}, -- fall
-                         {41, 40}, -- laser
-                         {228, 229}}} -- stunned
+                         {41, 40, 41, 40}, -- laser
+                         {228, 229}},  -- stunned
+
+              objects = { door = {{68, 130}, {67, 129}},
+                  blood_prints =  {26, 27, 28, 29},
+                      trapdoor =  {176, 177},
+                       scanner =  {131, 134},
+                        ration =   180 }}
 
 -- global object sprite-on-map store
-map_store = { player = {17,1,33,49},
-              enemy = {208,192,224,240},
-              trapdoor = 176,
-              ration = 180 }
+map_store = { player   = {17,1,33,49},
+              enemy    = {208,192,224,240},
+              door     = {67, 68},
+              scanner  = {131, 134},
+              trapdoor =  176,
+              ration   =  180 }
 
 -- enemy variants data
-enemy_variants = {enemy = {{"clockwise", {5, 5}}, -- variant 1
+enemy_variants = {player = {{"player", {5, 5}}},
+                  enemy = {{"clockwise", {5, 13}}, -- variant 1
                            {"line", {5, 2}}, -- variant 2
-                           {"still", {5, 13}} }}  -- variant 3
+                           {"still", {5, 5}} }}  -- variant 3
 
 -- misc global vars
-current_level, turn, chunk, frame, biframe = 0,0,0,1,1
+current_level = 0 -- don't touch, change param of load_level instead
+turn, chunk, frame, biframe, last_frame = 0,0,1,1,0
 global_time, turn_start = nil, nil
+input_act, input_dir, input_down = 0, 0, {false,false,false,false,false,false}
+last_camera_pos = { x = 0, y = 0 }
 
 --- / global level and sprite data ---
 --------------------------------------
 --- inter-level storage globals ------
 ---  (these persist between resets)
 
-input_act, input_dir, input_down = 0, 0, {false,false,false,false,false,false}
-
 -- global level-on-map store
 -- edity vars
-levels = {{0,0,4,4},{5,5,32,30}}
+levels = {{0,0,32,30}}
+level_items = {{"gloves"}}
+level_keycards = {{2,1,3}}
+level_keydoors = {{1,2,3}}
 
-current_items = { gloves = 0,
-                  socom  = 0,
-                  c4     = 0 }
+-- TODO: refactor above vars into level class?
+level_enemy_variants = {{2,2,3,3, 2,2,3,2, 1,2,2,1,1, 3,3,1,2, 3,3,3,2,1, 3,3,1,1}}
+game_speed = 2.5 -- edit me!
 
-function btnpress(i)
-  if i > 4 then
-    input_act = i
-    if (input_dir == 0) input_dir = player.facing
-  else
-    input_dir = i
-    if (input_act < 5) input_act = 1
-  end
-  -- printh("btnpress("..i..") = {"..input_act..","..input_dir.."}")
-end
+--- types to hold classes ---
+local actormt = {}
+local objectmt = {}
+local vecmt = {}
 
-function take_input()
-  local immediate_input = { btn(2), btn(1), btn(3), btn(0), btn(4), btn(5) }
-
-  for i=1,6 do
-    if immediate_input[i] and not input_down[i] then
-      input_down[i] = true
-      btnpress(i)
-    elseif not immediate_input[i] and input_down[i] then
-      input_down[i] = false
-      temp_act = input_act
-      if (input_act == i or (input_dir == i and input_act == 1)) input_act = 0; return {temp_act, input_dir}
-    end
-  end
-
-  return nil
-end
-
-function cut_chunk(c, v, m)
-  return mid(1, flr(c / v) + 1, m)
-end
-
-function update_frame()
-  chunk = flr((time() - global_time) * 400)
-  frame = cut_chunk(chunk, 100, 4)
-  biframe = cut_chunk(chunk, 50, 8)
-end
-
---- update cycle ---
-function _update60()
-  update_frame()
-
-  if (turn_start) then
-    if (chunk > 399) end_turn()
-    return
-  end
-
-  player.input_act = take_input()
-  if (not player.input_act) return
-  start_turn(); player.input_act = nil;
-end
-
-function start_turn()
-  for actor in all(actors) do
-    actor:determine_act()
-    actor:turn_to_face_act()
-  end
-
-  turn += 1
-  global_time = time()
-  turn_start = time()
-
-  update_frame() -- update frame here so we don't get a ghost drawing
-end
-
-function end_turn()
-  turn_start = nil
-  global_time = time()
-
-  for a in all(actors) do
-    a:attempt_act()
-  end
-
-  for o in all(objects) do
-    o:activate()
-  end
-end
-
--- press a direction to move
+local object_methods = {}
+local actor_methods = {}
+local vector_methods = {}
 
 --- / inter-level storage globals ----
 --------------------------------------
 --- checkpoint storage globals ---
 player = nil
 
-actors = {} -- global list of actors
+-- store global objects
+global_objects = { actor = {},   -- includes player and enemy patterns
+                   object = {},  -- includes all of the following:
+
+                   -- the following are all "objects"
+                   relay = {},    -- checkpoints
+                   door = {},     -- includes keydoors and multilock doors.
+                   trapdoor = {},
+                   prints = {},   -- includes "blood_prints" and "snow_prints" patterns?
+                   item = {}}     -- ration, keycard, equipment (TODO: unimplemented)
+
 objects = {} -- global list of objects
 relays = {} -- global list of relays (checkpoints)
 doors = {} -- global list of doors
+trapdoors = {} -- global trapdoors
+prints = {} -- global prints
 
 mset_restore = {} -- we use mset to replace the map while it's in play, so we store a list of replaced tiles to put back when the level is reset
 -- mset_restore format: {position_vector,tile} (referred to as [1],[2])
 --- / checkpoint storage globals ---
 --------------------------------------
 
--- on init, simply load the first level.
+-------------------------------------------------------
+-- SECTION 1: on init, simply load the first level. ---
+-------------------------------------------------------
 function _init()
   load_level(1)
 end
 
+-----------------------------------------------
+-- SECTION 2: update cycle deals with turns ---
+-----------------------------------------------
+function _update60()
+  update_frame()
+
+  if (turn_start) then
+    if (chunk > 999) end_turn()
+    return
+  end
+
+  if (player.life > 0) then
+    player.input_act = take_input()
+    if (not player.input_act) return
+    start_turn(); player.input_act = nil
+  end
+
+  if (not turn_start and chunk > 499) start_turn() -- allow a little "thinking" time if player is dead
+end
+
+------------------------------------------------------
+--- SECTION 3: draw cycle deals with camera and UI ---
+------------------------------------------------------
+function _draw()
+  cls()
+
+  if (not player) return
+  local p = to_pixel(player.pos)
+
+  -- center camera
+  buffer = make_vec2d(0,0)
+  if (p != last_camera_pos) then -- player has new pos, we transition
+    buffer = p - last_camera_pos
+    buffer.x = -flr(buffer.x / 1.5)
+    buffer.y = -flr(buffer.y / 1.5)
+  end
+  camera(p.x + buffer.x - 56, p.y + buffer.y - 56)
+  last_camera_pos = p + buffer
+
+  -- draw map
+  --map(0, 0, 0, 0, 32, 30)
+  draw_map()
+
+  -- sneaky draw-layering to avoid excessive splitting of objects (TODO: for now...)
+  draw_set(global_objects.object)
+  draw_set(global_objects.actor)
+  draw_set({player})
+
+  -- debug ui
+  if input_dir > 0 and input_act > 0 then
+    local ui = to_pixel(dir_to_vec(input_dir) + player.pos)
+    zspr(sprite_store.select, ui.x, ui.y)
+  end
+
+  -- debug action
+  if (input_act == 5) zspr(57, p.x, p.y)
+  if (input_act == 6) zspr(56, p.x, p.y)
+
+  camera(0,0)
+
+  -- debug frame ui
+  -- print(frame.." "..biframe.." "..chunk, 10,10)
+
+  -- health bar
+  -- printh(player.life .. " " .. player.max_life .. " " .. player.o2 .. " " .. player.max_o2)
+  draw_bar("life", player.life, player.max_life, 3, 2, 0)
+  if (player:in_water()) draw_bar("o2", player.o2, player.max_o2, 12, 1, 1)
+  -- draw_bar("boss", 5, 7, 9, 4, 2)
+
+  -- window border
+  rectcolor = 3
+  if (turn_start != nil) rectcolor = 5
+  rect(0,0,127,127,rectcolor)
+end
+
+---------------------------------------------
+--- RELATING TO SECTION 1: Making the map ---
+---------------------------------------------
+
 -- load a level.
 function load_level(l)
+  enemy_count = 0
   current_level = l
+
   global_time = time()
   restore_msets(l)
 
@@ -186,11 +227,37 @@ end
 -- o is passed from get_tile_pattern
 function make_object_from_map(v, o)
   local pattern = o[1]
-  if (pattern == "ration") r = make_object(pattern, v); add(objects, r)
-  if (pattern == "trapdoor") t = make_object(pattern, v); add(objects, t); return sprite_store.void
-  if (pattern == "player") p = make_actor("player", v, o[2], 3); player = p; add(actors, p)
-  if (pattern == "enemy") a = make_actor("enemy", v, o[2]); add(actors, a)
+  if (pattern == "player") p = make_actor("player", v, o[2], 3); player = p; add(global_objects.actor, p); return sprite_store.floor
+  if (pattern == "enemy") enemy_count += 1; a = make_actor("enemy", v, o[2]); add(global_objects.actor, a); return sprite_store.floor
+
+  if (pattern == "trapdoor") t = make_object(pattern, v); add(global_objects.object, t); add(global_objects.trapdoor, t); return sprite_store.void
+  if (pattern == "door") d = make_object(pattern, v); add(global_objects.object, d);  add(global_objects.door, d);  return sprite_store.void
+
+  o = make_object(pattern, v); add(objects, o)
   return sprite_store.floor
+end
+
+function make_object(pattern, pos, facing)
+  local t = {
+    pattern = pattern,
+    pos = make_vec2d(pos.x, pos.y),
+    facing = facing or 1,
+    solid = 0
+  }
+
+  mt = copymt(objectmt)
+
+  if (pattern == "trapdoor") make_trapdoor(t, mt)
+  if (pattern == "door") make_door(t, mt)
+  -- if (pattern == "scanner") make_scanner(t, mt)
+  if (pattern == "ration") then
+    function mt.__index.activate(self)
+      -- printh("Ration Activated")
+    end
+  end
+
+  setmetatable(t, mt)
+  return t
 end
 
 -- get_tile_pattern returns a more detailed object to make a tile out of,
@@ -227,66 +294,130 @@ function lmapset(v, l, tile)
   mset(v.x + levels[l][1], v.y + levels[l][2], tile)
 end
 
-------------------
---- behaviours ---
-------------------
-function is_wall(pos)
-  m = lmapget(pos)
-  return (m >= 64 and m <= 127)
+--------------------------------------------
+--- RELATING TO SECTION 2: Turns & Input ---
+--------------------------------------------
+
+function start_turn()
+  for actor in all(global_objects.actor) do
+    if (actor.life > 0) then
+      -- run ai routine (looking for player, etc)
+      actor:determine_act()
+
+      -- if (actor.blast_pos == nil) then TODO:blast_pos
+      actor:pickup_prints()
+      if (actor.blood_prints >= 1) actor:place_new_prints("blood_prints")
+      -- end
+    end
+  end
+
+  -- ensure actors don't try and occupy the same space as each other
+  avoid = true
+  while (avoid) do
+    avoid = false
+    for actor in all(global_objects.actor) do
+      if (actor != player) then
+        avoid = actor:do_avoidance() or avoid -- we need to redo avoids if any avoid is found.
+      end
+    end
+  end
+
+  turn += 1
+  global_time = time()
+  turn_start = time()
+
+  update_frame() -- update frame here so we don't get a weird ghost drawing due to draw and update running independently
 end
 
-function is_water(pos)
-  return lmapget(pos) == 182
+function end_turn()
+  turn_start = nil
+  global_time = time()
+
+  for a in all(global_objects.actor) do
+    if (a.blood_prints >= 1) a:redirect_existing_prints("blood_prints"); a.blood_prints -= 1
+    a:tick_oxygen()
+    if (a != player) a:attempt_act(1) -- attempt all moves for actors first
+  end
+
+  player:attempt_melee()
+  player:attempt_act(1) -- we have to attempt the player's move last
+
+  for a in all(global_objects.actor) do
+    a:attempt_act(2) -- attempt all shots last
+    a.act = {0, 0}
+  end
+
+  for o in all(global_objects.object) do
+    o:activate()
+  end
 end
 
-------------------
---- draw cycle ---
-------------------
+-- Input funcs
+function btnpress(i)
+  if i > 4 then
+    input_act = i
+    if (input_dir == 0) input_dir = player.facing
+  else
+    input_dir = i
+    if (input_act < 5) input_act = 1
+  end
+end
 
-function _draw()
-  cls()
+function take_input()
+  local immediate_input = { btn(2), btn(1), btn(3), btn(0), btn(4), btn(5) }
 
-  if (not player) return
-  local p = to_pixel(player.pos)
+  for i=1,6 do
+    if immediate_input[i] and not input_down[i] then
+      input_down[i] = true
+      btnpress(i)
+    elseif not immediate_input[i] and input_down[i] then
+      input_down[i] = false
+      temp_act = input_act
+      if (input_act == i or (input_dir == i and input_act == 1)) input_act = 0; return {temp_act, input_dir}
+    end
+  end
 
-  -- center camera
-  camera(p.x - 56, p.y - 56)
+  return nil
+end
 
-  -- draw map
-  --map(0, 0, 0, 0, 32, 30)
-  draw_map()
+function cut_chunk(c, v, m)
+  return mid(1, flr(c / v) + 1, m)
+end
 
-  -- draw everything else
-  local draws = concat(objects, actors)
-  add(draws, player)
+function update_frame()
+  chunk = flr((time() - global_time) * 1000 * game_speed)
+  frame = cut_chunk(chunk, 250, 4)
+  biframe = cut_chunk(chunk, 125, 8)
+
+  if (frame != last_frame and chunk > 250) then
+    roll_frame()
+    last_frame = frame
+  end
+end
+
+function roll_frame()
+  for a in all(global_objects.actor) do
+    if (a.laser.frames > 0) a.laser.frames -= 1
+    if (a.frames.n > 0) a.frames.n -= 1
+  end
+end
+
+---------------------------------------------
+--- RELATING TO SECTION 3: draw functions ---
+---------------------------------------------
+
+function draw_set(draws)
+  for o in all(draws) do
+    o:draw_below()
+  end
 
   for o in all(draws) do
-    o.draw(o)
+    o:draw()
   end
 
-  -- debug ui
-  if input_dir > 0 and input_act > 0 then
-    local ui = to_pixel(dir_to_vec(input_dir) + player.pos)
-    zspr(sprite_store.select, ui.x, ui.y, 2)
+  for o in all(draws) do
+    o:draw_above()
   end
-
-  -- debug action
-  if (input_act == 5) zspr(57, p.x, p.y, 2)
-  if (input_act == 6) zspr(56, p.x, p.y, 2)
-
-  camera(0,0)
-
-  -- debug frame ui
-  -- print(frame.." "..biframe.." "..chunk, 10,10)
-
-  -- health bar
-  -- printh(player.life .. " " .. player.max_life .. " " .. player.o2 .. " " .. player.max_o2)
-  draw_bar("life", player.life, player.max_life, 3, 2, 0)
-  if (player:in_water()) draw_bar("o2", player.o2, player.max_o2, 12, 1, 1)
-  -- draw_bar("boss", 5, 7, 9, 4, 2)
-
-  -- window border
-  rect(0,0,127,127,5)
 end
 
 function draw_map()
@@ -295,22 +426,22 @@ function draw_map()
       local v = make_vec2d(x, y)
       local pp = to_pixel(v)
       local tile = lmapget(v)
-      if (tile > 0) zspr(tile, pp.x, pp.y, 2)
+      if (tile > 0) zspr(tile, pp.x, pp.y)
     end
   end
 end
 
 -- concat tables
-function concat(t1,t2)
-    local t3 = {}
-    for i=1,#t1 do
-        t3[i] = t1[i]
-    end
-    for i=1,#t2 do
-        t3[#t1+i] = t2[i]
-    end
-    return t3
-end
+-- function concat(t1,t2)
+--     local t3 = {}
+--     for i=1,#t1 do
+--         t3[i] = t1[i]
+--     end
+--     for i=1,#t2 do
+--         t3[#t1+i] = t2[i]
+--     end
+--     return t3
+-- end
 
 -- sprite sheet n to vector position
 function n_to_vec(n)
@@ -318,49 +449,21 @@ function n_to_vec(n)
 end
 
 -- zoomed sprite
-function zspr(n,dx,dy,dz,w,h,ssw,ssh)
+function zspr(n, dx, dy, dz, w, h, ssw, ssh)
   local v = n_to_vec(n)
   w = w or 1
   h = h or 1
   ssw = ssw or 8
   ssh = ssh or 8
+  dz = dz or 2
   sw, sh = ssw * w, ssh * h
   dw, dh = sw * dz, sh * dz
   sspr(v.x,v.y,sw,sh,dx,dy,dw,dh)
 end
 
---- types ---
-local actormt = {}
-local objectmt = {}
-local vecmt = {}
-
-local objectMethods = {}
-local actorMethods = {}
-local vectorMethods = {}
-
 ----------------------
 --- OBJECT METHODS ---
 ----------------------
-
-function make_object(pattern, pos, facing)
-  local t = {
-    pattern = pattern,
-    pos = pos,
-    facing = facing or 1
-  }
-
-  mt = copymt(objectmt)
-  if (pattern == "trapdoor") make_trapdoor(t, mt)
-
-  if (pattern == "ration") then
-    function mt.__index.activate(self)
-      -- printh("Ration Activated")
-    end
-  end
-
-  setmetatable(t, mt)
-  return t
-end
 
 function make_trapdoor(t, mt)
   t.timer = false
@@ -368,36 +471,82 @@ function make_trapdoor(t, mt)
   function mt.__index.activate(self)
     if (self.timer) self.timer = false; self.facing = 2; sfx(13)
 
-    a = self.pos:actor_on_here()
-    if (not a) return
+    local actors = self.pos:actors_on_here()
+    if (not actors) return
 
-    if (self.facing == 1) sfx(11); self.timer = true; return
-    sfx(5)
-    -- TODO: kill actor here
-    player.life -= 1
+    for a in all(actors) do
+      if (a.life > -2) then
+        if (self.facing == 1) sfx(11); self.timer = true; return
+        sfx(5); a:fall()
+      end
+    end
+  end
+end
+
+-- function make_scanner(t, mt)
+--   function mt.__index.activate(self)
+--     if (not self:stepped_on()) return
+--     self:unlock_adjacent_doors()
+--   end
+--
+--   function mt.__index.stepped_on(self)
+--     for a in all(global_objects.actor) do
+--       if (a.pos == self.pos) return true
+--     end
+--     return false
+--   end
+--
+--   function mt.__index.unlock_adjacent_doors(self)
+--     for door in all(self.pos:adjacent_objects("door")) do
+--       if (door.solid) sfx(16); door.solid = 0
+--     end
+--   end
+--   function mt.__index.draw(self)
+--   end
+-- end
+
+function make_door(t, mt)
+  t.solid = 1
+  function mt.__index.draw(self)
+  end
+  function mt.__index.draw_above(self)
+    local p = to_pixel(self.pos)
+    zspr(animations.objects.door[self.facing][(1 - self.solid) + 1], p.x, p.y)
   end
 end
 
 function default_sprite(pattern, facing)
-  local s = sprite_store[pattern]
+  s = animations[pattern]
+  if (not s) s = animations["objects"][pattern]
   if (not check_type(s, "table")) return s
-  return s[facing]
+  if (facing <= 0) return s[1]
+  if (not check_type(s[facing], "table")) return s[facing]
+  return s[facing][1]
 end
 
-function objectMethods.sprite(self)
+function object_methods.sprite(self)
   return default_sprite(self.pattern, self.facing)
 end
 
-function objectMethods.draw(self)
+function object_methods.draw(self)
   local p = to_pixel(self.pos)
-  zspr(self:sprite(), p.x, p.y, 2)
+  zspr(self:sprite(), p.x, p.y)
 end
 
-function objectMethods.activate(self)
+-- TODO: refactor this draw_below stuff
+function object_methods.draw_below(self)
+  -- printh("Generic draw_below call!")
+end
+
+function object_methods.draw_above(self)
+  -- printh("Generic draw_above call!")
+end
+
+function object_methods.activate(self)
   -- printh("Generic object!")
 end
 
-objectmt.__index = objectMethods
+objectmt.__index = object_methods
 
 ---------------------
 --- ACTOR METHODS ---
@@ -409,11 +558,17 @@ function make_actor(pattern, pos, facing, life)
 
   -- game data
   t.life, t.max_life, t.o2, t.max_o2 = life, life, life, life
-  t.aquatic = false
-  t.variant = 2
+  t.aquatic = false -- aquatic is whether water appears as floor or wall for the actor AI. Player is aquatic.
+  t.variant = level_enemy_variants[current_level][enemy_count] -- TODO: get variant from level data array
+  -- blood prints data
+  t.blood_prints, t.stunned_turns = 0, 0
+  -- laser data
+  t.laser = { frames = 0, target = make_vec2d(0, 0), dir = 0, tiles = {} }
+  -- frames data
+  t.frames = { n = 0, pattern = "" }
   -- see input acts and directions
   t.act = {0, 0}
-  -- player changes
+  -- player changes to the actormt
   mt = copymt(actormt)
   if (pattern == "player") make_player(t, mt)
 
@@ -423,72 +578,120 @@ end
 
 function make_player(t, mt)
   t.aquatic = true
+  t.variant = 1
   function mt.__index.determine_act(self)
     self.act = copymt(self.input_act)
+    self:turn_to_face_act()
   end
 end
 
-function actorMethods.act_pos(self)
+function actor_methods.act_pos(self)
   local a = self.act[1]
   local d = self.act[2]
-  -- printh("act "..a.." : "..d)
-
   if (d == 0) return self.pos
   check_point = self.pos + dir_to_vec(d)
 
   if a == 1 then
-    if (not is_wall(check_point) and (not is_water(check_point) or self.aquatic)) return check_point
+    if (not check_point:is_wall() and (not check_point:is_water() or self.aquatic)) return check_point
   end
 
   return self.pos
 end
 
-function actorMethods.in_water(self)
-  return is_water(self.pos) and is_water(self:act_pos())
+function actor_methods.attempt_melee(self)
+  if (self.life <= 0) return
+  attack_point = self:act_pos()
+  h = attack_point:actors_on_here("player")
+  if (h) h[1].stunned_turns = 3; return
 end
 
-function actorMethods.turn_to_face_act(self)
+function actor_methods.tick_oxygen(self)
+  if (self:in_water()) then
+    if (self.o2 <= 0 and self.life > 0) self:hurt(1, true)
+    if (self.o2 >= 1) self.o2 -= 1; sfx(12)
+  else
+    self.o2 = self.max_o2
+  end
+end
+
+function actor_methods.in_water(self)
+  return self.pos:is_water() and self:act_pos():is_water()
+end
+
+function actor_methods.turn_to_face_act(self)
   if (self.act[2] > 0) self.facing = self.act[2]
 end
 
-function actorMethods.move_type(self)
+function actor_methods.move_type(self)
   return enemy_variants[self.pattern][self.variant][1]
 end
 
-function actorMethods.determine_act(self)
-  if (self.life <= 0) self.act = {0, 0}; return
+function actor_methods.determine_act(self)
+  -- wait out any stuns. TODO: move this so it affects player also. it's an early returner
+  if (self.stunned_turns > 0) then
+    self.stunned_turns -= 1
+    if (self.stunned_turns > 0) return
+    ha = self.pos:actors_on_here()
+    if (ha and ha[1].life > 0 and ha[1] != self) self.stunned_turns = 1; return
+  end
+
+  -- save previous facing so we can prioritise shooting player over following prints
+  previous_facing = self.facing
+
+  -- follow footprints at first, if any.
+  follow_prints = self.pos:objects_on_here("prints", "blood_prints")
+  if (follow_prints) self.facing = follow_prints[1].facing
+
+  -- initiate action
   self.act[1] = 1
   self.act[2] = self.facing
-  previous_facing = self.facing
+  -- run variant AI subroutine (whether we about face or circle clockwise; boss movement patterns etc.)
   self:determine_facing()
 
   -- if player is dead, no need to look
   if (player.life <= 0) return
 
   -- with old facing, look for player to shoot
-  tiles = self:tiles_ahead(previous_facing)
+  tiles = self:tiles_ahead(previous_facing, true)
   for k, tile in pairs(tiles) do
     if (player.pos == tile) then
       self.act = {2, previous_facing}  -- shoot
+      self.facing = previous_facing
+      sfx(10)
       return
     end
   end
 
   -- with new facing, look again
-  tiles = self:tiles_ahead()
+  tiles = self:tiles_ahead(self.facing, true)
   for k, tile in pairs(tiles) do
     if (player.pos == tile) then
       self.act[1] = 2 -- shoot
+      sfx(10)
       return
     end
   end
+
+  self:turn_to_face_act()
 end
 
-function actorMethods.determine_facing(self)
+function actor_methods.determine_facing(self)
   mvt = self:move_type()
   apos = self:act_pos()
-  if (mvt == "clockwise") self.act = {0, 0}; return
+  if (mvt == "clockwise") then
+    directions_tried = 0
+    while apos == self.pos do
+      self.facing += 1
+      if (self.facing > 4) self.facing = 5 - self.facing
+      self.act[2] = self.facing
+      apos = self:act_pos()
+      directions_tried += 1
+      if (directions_tried > 4) self.stunned_turns = 3; return
+    end
+  end
+
   if (mvt == "still") self.act = {0, 0}; return
+
   if (mvt == "line") then
     if (apos == self.pos) then
       f = self.facing + 2
@@ -498,17 +701,62 @@ function actorMethods.determine_facing(self)
   end
 end
 
-function actorMethods.attempt_act(self)
-  a = self.act[1]
-  if (a == 1) self:attempt_move()
-  if (a == 2) self:attempt_shot()
+function actor_methods.do_avoidance(self)
+  -- if (self.life <= 0) return
+  -- if we are moving into a tile that someone else plans on moving into, only one should move there.
+  new_pos = self:act_pos()
+  -- if we arent moving, no need to avoid
+  if (new_pos == self.pos) return
+
+  for a in all(global_objects.actor) do
+    if (a.life > 0) then
+      apos = a:act_pos()
+
+      -- TODO: maaaybe some enemy_variants should also dodge the player, so remove last clause for other AIs (this might not matter)
+      if (a != self and apos == new_pos and a.pattern != "player") then
+        self.act = {0, 0}
+        return true -- return true if avoidance was done. if so, all actors need to redo avoidance.
+      end
+    end
+  end
+
+  return false
 end
 
-function actorMethods.attempt_move(self)
+function actor_methods.pickup_prints(self)
+  if (self.life <= 0) return
+
+  for a in all(global_objects.actor) do
+    if (a.life <= 0 and a.pos == self.pos) self.blood_prints = 5; return
+  end
+end
+
+function actor_methods.place_new_prints(self, pattern)
+  if (self.life <= 0 or self.pos:is_water() or self.pos:objects_on_here("trapdoor")) return
+
+  p = self.pos:objects_on_here("prints", pattern)
+  if (not p) then
+    d = self.act[2]
+    if (d <= 0) d = self.facing
+    o = make_object(pattern, self.pos, d)
+    add(global_objects.prints, o)
+    add(global_objects.object, o)
+  end
+end
+
+-- TODO: bit hacky way to ensure that some things happen in a certain order in determine_act
+function actor_methods.attempt_act(self, act_type)
+  a = self.act[1]
+  if (a == 1 and act_type == 1) self:attempt_move()
+  if (a == 2 and act_type == 2) self:attempt_shot()
+end
+
+function actor_methods.attempt_move(self)
   self.pos = self:act_pos()
 end
 
-function actorMethods.attempt_shot(self)
+-- determine who gets shot by what. It's important that the player is shot last.
+function actor_methods.attempt_shot(self)
   sfx(4)
 
   tiles = {}
@@ -516,51 +764,76 @@ function actorMethods.attempt_shot(self)
     hurts = {}
     add(tiles, tile)
 
-    for j, a in pairs(actors) do
-      if (self != a and a.pos == tile and a.life > 0) add(hurts, a)
+    as = tile:actors_on_here()
+    if (as) then
+      for a in all(as) do
+        if (a and self != a and a.life > 0) add(hurts, a)
+      end
     end
 
     l = #hurts
     for a in all(hurts) do
+      -- if the bullet could hit more than one person, hit the non-player. TODO: some bullets should go through all?
       if (l > 1) then
         if (a != player and a.life > 0) then
           a:hurt()
-          -- queue_lasers(actor, a, tiles, actor.act[2])
+          self:queue_lasers(tiles, a)
           return
         end
-      else
-        if (l == 1) then
-          a:hurt()
-          -- queue_lasers(actor, a, tiles, actor.act[2])
-          return
-        end
+      elseif (l == 1) then
+        a:hurt()
+        self:queue_lasers(tiles, a)
+        return
       end
     end
   end
 end
 
-function actorMethods.hurt(self, amount)
+function actor_methods.redirect_existing_prints(self, pattern)
+  if (self.life <= 0) return
+  p = self.pos:objects_on_here("prints", pattern)
+  if (self.act[2] > 0 and p[1].pattern == pattern) p[1].facing = self.act[2]
+end
+
+function actor_methods.set_frames(self, pattern, n)
+  self.frames = { pattern = pattern, n = n }
+end
+
+function actor_methods.queue_lasers(self, tiles, a, d)
+  d = d or self.act[2]
+  self.laser = { frames = 2, target = a.pos, dir = d, tiles = {} }
+  del(tiles, tiles[#tiles])
+  self.laser.tiles = tiles
+end
+
+function actor_methods.hurt(self, amount, hide_anim)
   amount = amount or 1
   self.life = max(0, self.life - amount)
   if (self.life == 0) then
     sfx(5)
+    if (not hide_anim) self:set_frames("death", 4)
     -- if (not is_water(actor.pos)) actor.death_frames = 4
   else
     sfx(5, -1, 1, 3)
+    if (not hide_anim) self:set_frames("hurt", 2)
     -- if (not is_water(actor.pos)) actor.hurt_frames = 2
   end
 end
 
-function actorMethods.tiles_ahead(self, d, ignore_glass)
+function actor_methods.fall(self)
+  self.life = -2
+  self:set_frames("fall", 2)
+end
+
+function actor_methods.tiles_ahead(self, d, ignore_glass)
   ignore_glass = ignore_glass or false
   d = d or self.facing
   p = self.pos + dir_to_vec(d)
-  tx, ty = p.x, p.y
 
   collected = {}
   i = 1
 
-  while not (is_wall(p)) do -- TODO: and (not is_glass(p) or not ignore_glass)) do
+  while not (p:is_wall() and (not p:is_glass() or not ignore_glass)) do
     collected[i] = p
     i += 1
     p = p + dir_to_vec(d)
@@ -569,30 +842,94 @@ function actorMethods.tiles_ahead(self, d, ignore_glass)
   return collected
 end
 
-function actorMethods.draw(self)
+function actor_methods.draw_sprite(self)
   local p = to_pixel(self.pos)
-  s = self:tile_shift()
+  local s = self:tile_shift()
   ssw, ssh, y_shift = 8, 8, 0
   if (self:in_water()) ssh = 4; y_shift = 2
+
+  palswap = enemy_variants[self.pattern][self.variant][2]
+  pal(palswap[1], palswap[2])
+  -- printh("sprite:" ..self:sprite().." px "..p.x.." py "..p.y.." sx "..s.x.." sy "..s.y)
   zspr(self:sprite(), p.x + s.x * 2, p.y + s.y * 2 + y_shift, 2, 1, 1, ssw, ssh)
+  pal(palswap[1], palswap[1])
 end
 
-function actorMethods.sprite(self)
+function actor_methods.draw_below(self)
+  if (self.life > 0) return
+  self:draw_sprite()
+end
+
+function actor_methods.draw(self)
+  if (self.life <= 0) return
+  self:draw_sprite()
+end
+
+function actor_methods.draw_above(self)
+  -- draw speculative lasers
+  anim = animations[self.pattern][7]
+  if (self.act[1] == 2) then
+    d = self.act[2]
+    s = anim[d]
+
+    tiles = self:tiles_ahead(d, true)
+    for tile in all(tiles) do
+      t = to_pixel(tile)
+      zspr(s, t.x, t.y)
+    end
+  end
+
+  -- draw post-shot lasers
+  l = self.laser
+  s = anim[l.dir]
+
+  if (l.frames > 0) then
+    for tile in all(l.tiles) do
+      if (l.frames == 1) pal(8,2); pal(11,3)
+      t = to_pixel(tile)
+      l_dir_mod = (l.dir+1) % 2
+      zspr(s, t.x, t.y)
+      zspr(s, t.x + l_dir_mod * 2, t.y + (1 - l_dir_mod) * 2)
+      pal(8,8)
+      pal(11,11)
+    end
+  end
+end
+
+function actor_methods.sprite(self)
+  frames_n = self.frames.n
+  pattern = self.pattern
+  frames_pattern = self.frames.pattern
+
+  if (frames_n > 0) then
+    if (frames_pattern == "death") return animations[pattern][5][(4 - frames_n) + 1]
+    if (frames_pattern == "hurt") return animations[pattern][5][(2 - frames_n) + 1]
+    if (frames_pattern == "fall") return animations[pattern][6][(2 - frames_n) + 1]
+  end
+
+  if (self.life <= 0) then
+    if (self.life == -2) return 255
+    return animations[self.pattern][5][4]
+  end
+
+  if (self.stunned_turns > 0) return animations[pattern][8][(frame % 2) + 1]
+
   if (turn_start != nil) then
-    anim = animations[self.pattern][self.facing]
+    anim = animations[pattern][self.facing]
     if (self.act[1] == 1) return anim[frame+1]
     if (self.act[1] == 2) return anim[6]
   end
-  return default_sprite(self.pattern, self.facing)
+
+  return default_sprite(pattern, self.facing)
 end
 
-function actorMethods.tile_shift(self)
+function actor_methods.tile_shift(self)
   apos = self:act_pos()
   if (not (apos == self.pos) and turn_start) return make_vec2d((apos.x - self.pos.x) * biframe, (apos.y - self.pos.y) * biframe)
   return make_vec2d(0, 0)
 end
 
-actormt.__index = actorMethods
+actormt.__index = actor_methods
 
 ----------------------
 --- VECTOR METHODS ---
@@ -611,20 +948,76 @@ function make_vec2d(x, y)
         x = x,
         y = y
     }
+
     setmetatable(t, vecmt)
     return t
 end
 
--- function vectorMethods.debug_print(self, msg)
+-- function vector_methods.debug_print(self, msg)
 --   printh(msg.." ("..self.x..", "..self.y..")")
 -- end
 
-function vectorMethods.actor_on_here(self)
-  if (player.pos == self) return player
-  for a in all(actors) do
-    if (a.pos == self) return a
+-- function vector_methods.is_adjacent(self, pos)
+--   return ((self.x == pos.x + 1 and self.y == pos.y) or
+--     (self.x == pos.x - 1 and self.y == pos.y) or
+--     (self.x == pos.x and self.y == pos.y + 1) or
+--     (self.x == pos.x and self.y == pos.y - 1))
+-- end
+
+function get_global_objects(pattern, subpattern)
+  pattern = pattern or "object"
+  subpattern = subpattern or pattern
+  local objects = {}
+  for o in all(global_objects[pattern]) do
+    if (o.pattern == subpattern) add(objects, o)
   end
+  return objects
+end
+
+function vector_methods.objects_on_here(self, pattern, subpattern)
+  local objects, on_here = get_global_objects(pattern, subpattern), {}
+  for o in all(objects) do
+    if (o.pos == self) add(on_here, o)
+  end
+  if (#on_here > 0) return on_here
   return nil
+end
+
+function vector_methods.actors_on_here(self, exclude_pattern)
+  exclude_pattern = exclude_pattern or ""
+  local actors = {}
+  for a in all(global_objects.actor) do
+    if (a.pos == self and a.pattern != exclude_pattern) add(actors, a)
+  end
+  if (#actors > 0) return actors
+  return nil
+end
+
+-- function vector_methods.adjacent_objects(self, pattern)
+--   pattern = pattern or "object"
+--   local os = {}
+--   for o in all(objects) do
+--     if (o.pattern == pattern and self:is_adjacent(o.pos)) add(os, o)
+--   end
+--   return os
+-- end
+
+-- no more than one "prints" can appear at once per tile
+
+function vector_methods.is_glass(self)
+  m = lmapget(self)
+  return (m == 119 or m == 120)
+end
+
+function vector_methods.is_wall(self)
+  a = self:objects_on_here("door")
+  if (a and a[1].solid == 1) return true
+  m = lmapget(self)
+  return (m >= 64 and m <= 127)
+end
+
+function vector_methods.is_water(pos)
+  return lmapget(pos) == 182
 end
 
 function vecmt.__add(a, b)
@@ -645,16 +1038,16 @@ function vecmt.__eq(a, b)
     return a.x == b.x and a.y == b.y
 end
 
-vecmt.__index = vectorMethods
+vecmt.__index = vector_methods
 
 -----------------------
 --- UI DRAW METHODS ---
 -----------------------
 function draw_bar(label, current, full, full_color, empty_color, position)
-  barp = position*10
-  rect(2, 2+barp,full * 5 + 3, 7+barp,6)
-  rectfill(3, 3+barp,full * 5 + 2, 6+barp,empty_color)
-  if (current > 0) rectfill(3,3+barp,current * 5 + 2,6+barp,full_color)
+  barp = position * 10
+  rect(2, 2 + barp, full * 5 + 3, 7 + barp, 6)
+  rectfill(3, 3 + barp, full * 5 + 2, 6 + barp, empty_color)
+  if (current > 0) rectfill(3, 3 + barp, current * 5 + 2, 6 + barp, full_color)
   print(label, 4, 6 + barp, 7)
 end
 
@@ -942,19 +1335,19 @@ __label__
 55555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555
 
 __map__
-51515151ff00ff00000000000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-5101f051ff00ff00000000000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-51b0b65100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-5151515100005465544154546500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000ff656554b6b5b550b0b5b564000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00007501b654b6b58471b554b554000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffffffffffffff000000000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffffffffffff00000000000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffffffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ffffffffff005465544154546500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00ffff656554b6b5b550b0b5b564000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000075b5b654b6b58471b5540154000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000ff65b6b6b654b0b5b054845400000000000000000000000000000000000000ffffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000064545464655454c0b5b5650000000000000000000000000000000000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000ff406174e0544542b070546400000000000000000000000000000000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000ff50b5b5b5b5c077b577f065ffffffffffffffffff645464ffff0000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000ff508670b570b571b55065ffff546464655476656454b95464ff0000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000405244514673b5b5b550ffff6470b5765454b570c0b5b5f054650000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000050b5b571b463464646730064c077b5b5f0b5b550b05454b047b65400ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000ff50b570b570b571b55065ffff546464655476656454b95464ff0000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000405282514673b5b5b550ffff6470b5765454b570c0b5b5f054650000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000050b5b5718463464646730064c077b5b5f0b5b550b05454b047b65400ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000000006042b0b58071c0b5b56041614562b56454548643c0b5b5f070b65400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000606142b5b5b5b9b5b068b584b5b554c0b540524161694148b65465000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000606142b5b5f040526174464657b5b547e047b5b550b6b66465640000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
@@ -981,7 +1374,7 @@ __sfx__
 011000000e7500e7500e7500e7500000016750000001575013750117501075011750137500e750000000d7500d750000000e7500e75010750107500e7500e750000000d7500d7500000000000000000000000000
 00120000136400b620046100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000800000f040110300e020110100217001170011500115002100215001d50035600366003760037600386003860038600376003560034600326002f6002b60000000236001d6001760014600106000000000000
-00100000270402e0303b7000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00100000160401f0303b7000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00050000376403c65037660336602f6502b640246301e630126200e6100a610086100c60005600206000c600046001f6001660010600000000000000000000000000000000000000000000000000000000000000
 000a00000114001060010000b600056000b60011f0011f0011f0011f0011f0011f0011f0011f0011f0011f0011f00000000000000000000000000000000000000000000000000000000000000000000000000000
 00060000097201d0000c0000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
@@ -989,8 +1382,8 @@ __sfx__
 000800000a1100b1200b1200110001100077000550005500045000350002500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000800001a730167401a7000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000c00000711006110071100611000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0008000025730277402c7503173031710000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000800002151024520265302652000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0008000025710277202c7303173031710000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000800002151024520265202651000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00080000267300a7102d7202d7200a710000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000800000d740017200d7400d74001720000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0008000027550295502b5502e55032550335503254033530325203351000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
