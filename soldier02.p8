@@ -1,8 +1,10 @@
 pico-8 cartridge // http://www.pico-8.com
 version 29
 __lua__
-
 -- big TODO: --
+-- no more red scanner green scanner. there is only keydoors and multidoors.
+-- get rid of meaningful keys so that minification works
+-- maybe a big puzzle room for the gloves
 -- reimplementing doors, rations, player items, relays, explosives
 -- Codec & Dialogue
 -- Main menu
@@ -14,10 +16,25 @@ __lua__
 
 ------------------------------------
 --- global level and sprite data ---
+------------------------------------
+
 -- some global handles for commonly used sprites
-sprite_store = { floor = 128,
+sprite_store = { floor = 181,
                  void = 255,
                  select = 46 }
+
+-- global object sprite-on-map store
+--        -> pattern  -> subpattern -> sprite #s
+map_store = { actor    = { player        = {17, 1, 33, 49},
+                           enemy         = {208, 192, 224, 240} },
+              door     = { door          = {67, 68},
+                           keydoor       = {104, 105} },
+              scanner  = { red_scanner   =  131,
+                           green_scanner =  134 },
+              item     = { ration        =  180,
+                           keycard       =  185 },
+              object   = { trapdoor      =  176,
+                           relay         =  132 }}
 
 animations = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/shoot/fly)
                          {1,2,3,2,5,6,7,4},        -- east (last three=roll/shoot/fly)
@@ -36,19 +53,15 @@ animations = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/sh
                          {41, 40, 41, 40}, -- laser
                          {228, 229}},  -- stunned
 
-              objects = { door = {{68, 130}, {67, 129}},
-                  blood_prints =  {26, 27, 28, 29},
-                      trapdoor =  {176, 177},
-                       scanner =  {131, 134},
-                        ration =   180 }}
-
--- global object sprite-on-map store
-map_store = { player   = {17,1,33,49},
-              enemy    = {208,192,224,240},
-              door     = {67, 68},
-              scanner  = {131, 134},
-              trapdoor =  176,
-              ration   =  180 }
+                 door = {{67, 129}, {68, 130}},
+              keydoor = {{104, 160}, {105, 161}},
+         blood_prints =  {26, 27, 28, 29},
+             trapdoor =  {176, 177},
+          red_scanner =  {131, 134},
+        green_scanner =  {134, 134},
+                relay =  {132, 186},
+               ration =   180,
+              keycard =   185 }
 
 -- enemy variants data
 enemy_variants = {player = {{"player", {5, 5}}},
@@ -56,8 +69,10 @@ enemy_variants = {player = {{"player", {5, 5}}},
                            {"line", {5, 2}}, -- variant 2
                            {"still", {5, 5}} }}  -- variant 3
 
+checkpoint_inventory = { keycard_level = 0 }
+inventory = {}
+
 -- misc global vars
-current_level = 0 -- don't touch, change param of load_level instead
 turn, chunk, frame, biframe, last_frame = 0,0,1,1,0
 global_time, turn_start = nil, nil
 input_act, input_dir, input_down = 0, 0, {false,false,false,false,false,false}
@@ -67,16 +82,15 @@ last_camera_pos = { x = 0, y = 0 }
 --------------------------------------
 --- inter-level storage globals ------
 ---  (these persist between resets)
-
 -- global level-on-map store
 -- edity vars
 levels = {{0,0,32,30}}
 level_items = {{"gloves"}}
-level_keycards = {{2,1,3}}
 level_keydoors = {{1,2,3}}
+level_enemy_variants = {{2, 2, 3,3, 2,2, 3,2, 1,2,2, 1, 2,1,3, 3,3, 1, 1,2,2,3, 3,3, 3,1,3,2, 1, 3, 3,1, 1}}
 
+current_level = 0 -- don't touch, change param of load_level instead
 -- TODO: refactor above vars into level class?
-level_enemy_variants = {{2,2,3,3, 2,2,3,2, 1,2,2,1,1, 3,3,1,2, 3,3,3,2,1, 3,3,1,1}}
 game_speed = 2.5 -- edit me!
 
 --- types to hold classes ---
@@ -84,6 +98,7 @@ local actormt = {}
 local objectmt = {}
 local vecmt = {}
 
+local make_methods = {}
 local object_methods = {}
 local actor_methods = {}
 local vector_methods = {}
@@ -93,23 +108,19 @@ local vector_methods = {}
 --- checkpoint storage globals ---
 player = nil
 
--- store global objects
+-- store global objects ALWAYS PATTERN TODO: we should probably clone and empty out map_store for this.
 global_objects = { actor = {},   -- includes player and enemy patterns
                    object = {},  -- includes all of the following:
 
                    -- the following are all "objects"
-                   relay = {},    -- checkpoints
-                   door = {},     -- includes keydoors and multilock doors.
+                   relay = {},    -- relay should be own item?
+                   door = {},     -- includes doors, keydoors and multilock doors.
+                   scanner = {},
                    trapdoor = {},
                    prints = {},   -- includes "blood_prints" and "snow_prints" patterns?
                    item = {}}     -- ration, keycard, equipment (TODO: unimplemented)
 
-objects = {} -- global list of objects
-relays = {} -- global list of relays (checkpoints)
-doors = {} -- global list of doors
-trapdoors = {} -- global trapdoors
-prints = {} -- global prints
-
+global_object_counts = {}
 mset_restore = {} -- we use mset to replace the map while it's in play, so we store a list of replaced tiles to put back when the level is reset
 -- mset_restore format: {position_vector,tile} (referred to as [1],[2])
 --- / checkpoint storage globals ---
@@ -126,6 +137,8 @@ end
 -- SECTION 2: update cycle deals with turns ---
 -----------------------------------------------
 function _update60()
+  if (not player) return
+
   update_frame()
 
   if (turn_start) then
@@ -167,8 +180,7 @@ function _draw()
 
   -- sneaky draw-layering to avoid excessive splitting of objects (TODO: for now...)
   draw_set(global_objects.object)
-  draw_set(global_objects.actor)
-  draw_set({player})
+  draw_set(concat(global_objects.actor, player))
 
   -- debug ui
   if input_dir > 0 and input_act > 0 then
@@ -190,7 +202,9 @@ function _draw()
   draw_bar("life", player.life, player.max_life, 3, 2, 0)
   if (player:in_water()) draw_bar("o2", player.o2, player.max_o2, 12, 1, 1)
   -- draw_bar("boss", 5, 7, 9, 4, 2)
-
+  -- draw other ui bits
+  if (inventory.keycard_level > 0) draw_keycard_ui()
+  if (player.blood_prints > 0) draw_blood_ui()
   -- window border
   rectcolor = 3
   if (turn_start != nil) rectcolor = 5
@@ -203,7 +217,10 @@ end
 
 -- load a level.
 function load_level(l)
-  enemy_count = 0
+  inventory = copymt(checkpoint_inventory)
+  global_object_counts = {}
+
+  enemy_count, keydoor_count = 0, 0 -- these are items with additional level data and have to be counted!
   current_level = l
 
   global_time = time()
@@ -216,60 +233,183 @@ function load_level(l)
       local o = get_tile_pattern(t)
       if (o) then
         add(mset_restore, {v, t})
-        lmapset(v, l, make_object_from_map(v, o))
+        lmapset(v, l, extract_object_from_map(v, o))
       end
     end
   end
 end
 
--- make_object_from_map makes objects ready to start the level from what's on the pico8 map.
+-- extract_object_from_map makes objects ready to start the level from what's on the pico8 map.
 -- it returns the code to replace it with on the map.
 -- o is passed from get_tile_pattern
-function make_object_from_map(v, o)
-  local pattern = o[1]
-  if (pattern == "player") p = make_actor("player", v, o[2], 3); player = p; add(global_objects.actor, p); return sprite_store.floor
-  if (pattern == "enemy") enemy_count += 1; a = make_actor("enemy", v, o[2]); add(global_objects.actor, a); return sprite_store.floor
+function extract_object_from_map(pos, opts)
+  -- make_PATTERN(PATTERN, SUBPATTERN, POSITION FACING_OR_SPRITENUM)
+  -- make_PATTERN splits INSIDE (so we don't have to replicate setmetatable calls in each subpattern make)
+  -- so inside make_PATTERN we need to do make_SUBPATTERN.
+  local object = {}
+  -- printh("making " .. opts[1] .. " of type " .. opts[2])
+  if (opts[1] == "actor") then
+    object = make_actor(pos, opts)
+    add(global_objects.actor, object)
+  else
+    object = make_object(pos, opts)
+    if (opts[1] == "object") then
+      add(global_objects[opts[2]], object)
+    else
+      add(global_objects[opts[1]], object)
+    end
 
-  if (pattern == "trapdoor") t = make_object(pattern, v); add(global_objects.object, t); add(global_objects.trapdoor, t); return sprite_store.void
-  if (pattern == "door") d = make_object(pattern, v); add(global_objects.object, d);  add(global_objects.door, d);  return sprite_store.void
+    if (opts[2] == "trapdoor" or opts[1] == "door") return sprite_store.void
+  end
 
-  o = make_object(pattern, v); add(objects, o)
   return sprite_store.floor
 end
 
-function make_object(pattern, pos, facing)
+-- opts = {pattern, subpattern, position, facing}
+function make_object(pos, opts, skip_submatch)
   local t = {
-    pattern = pattern,
+    pattern = opts[1],
+    subpattern = opts[2],
     pos = make_vec2d(pos.x, pos.y),
-    facing = facing or 1,
-    solid = 0
+    facing = opts[3] or 1,
   }
 
   mt = copymt(objectmt)
+  mk = "make_"..t.subpattern
+  printh(mk)
+  mmm = make_methods[mk]
+  if (not skip_submatch) mmm(t, mt); add(global_objects.object, t)
+  setmetatable(t, mt)
 
-  if (pattern == "trapdoor") make_trapdoor(t, mt)
-  if (pattern == "door") make_door(t, mt)
-  -- if (pattern == "scanner") make_scanner(t, mt)
-  if (pattern == "ration") then
-    function mt.__index.activate(self)
-      -- printh("Ration Activated")
-    end
-  end
+  if (not global_object_counts[t.subpattern]) global_object_counts[t.subpattern] = 0
+  global_object_counts[t.subpattern] += 1
+  return t
+end
+
+function make_actor(pos, opts)
+  local t = make_object(pos, opts, true)
+
+  -- game data
+  t.life, t.max_life = 1, 1
+  t.aquatic = false -- aquatic is whether water appears as floor or wall for the actor AI. Player is aquatic.
+  t.variant = level_enemy_variants[current_level][global_object_counts[t.subpattern]] -- TODO: get variant from level data array
+  -- blood prints data
+  t.blood_prints, t.stunned_turns = 0, 0
+  -- laser data
+  t.laser = { frames = 0, target = make_vec2d(0, 0), dir = 0, tiles = {} }
+  -- frames data
+  t.frames = { n = 0, pattern = "" }
+  -- see input acts and directions
+  t.act = {0, 0}
+  -- player changes to the actormt
+  mt = copymt(actormt)
+  if (opts[2] == "player") make_methods.make_player(t, mt)
 
   setmetatable(t, mt)
   return t
 end
 
+function make_methods.make_player(t, mt)
+  t.aquatic = true
+  t.variant = 1
+  life = 3
+  t.life, t.max_life, t.o2, t.max_o2 = life, life, life, life
+
+  function mt.__index.determine_act(self)
+    self.act = copymt(self.input_act)
+    self:turn_to_face_act()
+  end
+
+  player = t
+end
+
+-- generic -- only subpattern items (keycards, rations) are made, which call this.
+function make_item(t, mt)
+  function mt.__index.activate(self)
+    if (self.pos == player.pos) self:pick_up(); del(global_objects.item, self); del(global_objects.object, self)
+  end
+
+  function mt.__index.pick_up(self)
+
+  end
+
+  function mt.__index.draw(self)
+    local p = to_pixel(self.pos)
+    local shift = abs(biframe - 4) - 3
+    if (not turn_start) shift = 3
+    zspr(self:sprite(), p.x, p.y - shift)
+  end
+end
+
+function make_methods.make_door(t, mt)
+  t.solid = 1
+  function mt.__index.draw(self)
+  end
+  function mt.__index.draw_above(self)
+    local p = to_pixel(self.pos)
+    zspr(animations[t.subpattern][t.facing][(1 - t.solid) + 1], p.x, p.y)
+  end
+end
+
+function make_methods.make_keydoor(t, mt)
+  make_methods.make_door(t, mt)
+  t.key_level = level_keydoors[current_level][global_object_counts[t.subpattern]]
+end
+
+function make_methods.make_relay(t, mt)
+end
+
+function make_methods.make_red_scanner(t, mt)
+end
+
+function make_methods.make_green_scanner(t, mt)
+end
+
+function make_methods.make_keycard(t, mt)
+  make_item(t, mt)
+  function mt.__index.pick_up(self)
+    inventory.keycard_level += 1
+    sfx(14)
+  end
+end
+
+function make_methods.make_ration(t, mt)
+  make_item(t, mt)
+  function mt.__index.pick_up(self)
+    player.life = player.max_life
+    sfx(15)
+  end
+end
+
+function make_methods.make_trapdoor(t, mt)
+  t.timer = false
+  -- t.facing = 1 -- use facing instead of "active" for trapdoors to save tokens. 1 = set, 2 = open
+  function mt.__index.activate(self)
+    if (self.timer) self.timer = false; self.facing = 2; sfx(13)
+
+    local actors = self.pos:actors_on_here()
+    if (not actors) return
+
+    for a in all(actors) do
+      if (a.life > -2) then
+        if (self.facing == 1) sfx(11); self.timer = true; return
+        sfx(5); a:fall()
+      end
+    end
+  end
+end
 -- get_tile_pattern returns a more detailed object to make a tile out of,
 -- or nil if there is nothing to make here.
 -- the returned object is passed to make_object_from_map
 function get_tile_pattern(tile)
-  for k, o in pairs(map_store) do
-    if not check_type(o, "table") then
-      if (o == tile) return {k, o}
-    else
-      for f, i in pairs(o) do
-        if (i == tile) return {k, f}
+  for pattern, subpatobj in pairs(map_store) do
+    for subpattern, tileobj in pairs(subpatobj) do
+      if not check_type(tileobj, "table") then
+        if (tileobj == tile) return {pattern, subpattern, 1} -- return facing
+      else
+        for f, i in pairs(tileobj) do
+          if (i == tile) return {pattern, subpattern, f} -- return facing
+        end
       end
     end
   end
@@ -312,11 +452,11 @@ function start_turn()
   end
 
   -- ensure actors don't try and occupy the same space as each other
-  avoid = true
+  local avoid = true
   while (avoid) do
     avoid = false
     for actor in all(global_objects.actor) do
-      if (actor != player) then
+      if (actor != player and actor.life > 0) then
         avoid = actor:do_avoidance() or avoid -- we need to redo avoids if any avoid is found.
       end
     end
@@ -406,6 +546,20 @@ end
 --- RELATING TO SECTION 3: draw functions ---
 ---------------------------------------------
 
+-- zoomed sprite
+function zspr(n, dx, dy, dz, w, h, ssw, ssh)
+  local v = n_to_vec(n)
+  w = w or 1
+  h = h or 1
+  ssw = ssw or 8
+  ssh = ssh or 8
+  dz = dz or 2
+  sw, sh = ssw * w, ssh * h
+  dw, dh = sw * dz, sh * dz
+  sspr(v.x,v.y,sw,sh,dx,dy,dw,dh)
+end
+
+-- second-order layering (corpses underneath actors, prints underneath objects, etc) TODO: refactor?
 function draw_set(draws)
   for o in all(draws) do
     o:draw_below()
@@ -431,57 +585,29 @@ function draw_map()
   end
 end
 
--- concat tables
--- function concat(t1,t2)
---     local t3 = {}
---     for i=1,#t1 do
---         t3[i] = t1[i]
---     end
---     for i=1,#t2 do
---         t3[#t1+i] = t2[i]
---     end
---     return t3
--- end
-
--- sprite sheet n to vector position
-function n_to_vec(n)
-  return make_vec2d(8 * (n % 16), 8 * flr(n / 16))
+-- draw ui bar
+function draw_bar(label, current, full, full_color, empty_color, position)
+  barp = position * 10
+  rect(2, 2 + barp, full * 5 + 3, 7 + barp, 6)
+  rectfill(3, 3 + barp, full * 5 + 2, 6 + barp, empty_color)
+  if (current > 0) rectfill(3, 3 + barp, current * 5 + 2, 6 + barp, full_color)
+  print(label, 4, 6 + barp, 7)
 end
 
--- zoomed sprite
-function zspr(n, dx, dy, dz, w, h, ssw, ssh)
-  local v = n_to_vec(n)
-  w = w or 1
-  h = h or 1
-  ssw = ssw or 8
-  ssh = ssh or 8
-  dz = dz or 2
-  sw, sh = ssw * w, ssh * h
-  dw, dh = sw * dz, sh * dz
-  sspr(v.x,v.y,sw,sh,dx,dy,dw,dh)
+function draw_blood_ui()
+  spr(143, 112, 3)
+  print(player.blood_prints, 121, 4, 7)
 end
+
+function draw_keycard_ui()
+  spr(185, 85, 3)
+  print("lv."..inventory.keycard_level, 93, 4, 7)
+end
+
 
 ----------------------
 --- OBJECT METHODS ---
 ----------------------
-
-function make_trapdoor(t, mt)
-  t.timer = false
-  -- t.facing = 1 -- use facing instead of "active" for trapdoors to save tokens. 1 = set, 2 = open
-  function mt.__index.activate(self)
-    if (self.timer) self.timer = false; self.facing = 2; sfx(13)
-
-    local actors = self.pos:actors_on_here()
-    if (not actors) return
-
-    for a in all(actors) do
-      if (a.life > -2) then
-        if (self.facing == 1) sfx(11); self.timer = true; return
-        sfx(5); a:fall()
-      end
-    end
-  end
-end
 
 -- function make_scanner(t, mt)
 --   function mt.__index.activate(self)
@@ -505,27 +631,18 @@ end
 --   end
 -- end
 
-function make_door(t, mt)
-  t.solid = 1
-  function mt.__index.draw(self)
-  end
-  function mt.__index.draw_above(self)
-    local p = to_pixel(self.pos)
-    zspr(animations.objects.door[self.facing][(1 - self.solid) + 1], p.x, p.y)
-  end
-end
-
-function default_sprite(pattern, facing)
-  s = animations[pattern]
-  if (not s) s = animations["objects"][pattern]
+function default_sprite(subpattern, index)
+  s = animations[subpattern]
   if (not check_type(s, "table")) return s
-  if (facing <= 0) return s[1]
-  if (not check_type(s[facing], "table")) return s[facing]
-  return s[facing][1]
+
+  if (index <= 0 or not index) return s[1]
+  if (not check_type(s[index], "table")) return s[index]
+
+  return s[index][1]
 end
 
 function object_methods.sprite(self)
-  return default_sprite(self.pattern, self.facing)
+  return default_sprite(self.subpattern, self.facing)
 end
 
 function object_methods.draw(self)
@@ -535,15 +652,12 @@ end
 
 -- TODO: refactor this draw_below stuff
 function object_methods.draw_below(self)
-  -- printh("Generic draw_below call!")
 end
 
 function object_methods.draw_above(self)
-  -- printh("Generic draw_above call!")
 end
 
 function object_methods.activate(self)
-  -- printh("Generic object!")
 end
 
 objectmt.__index = object_methods
@@ -551,39 +665,6 @@ objectmt.__index = object_methods
 ---------------------
 --- ACTOR METHODS ---
 ---------------------
-
-function make_actor(pattern, pos, facing, life)
-  local t = make_object(pattern, pos, facing)
-  life = life or 1
-
-  -- game data
-  t.life, t.max_life, t.o2, t.max_o2 = life, life, life, life
-  t.aquatic = false -- aquatic is whether water appears as floor or wall for the actor AI. Player is aquatic.
-  t.variant = level_enemy_variants[current_level][enemy_count] -- TODO: get variant from level data array
-  -- blood prints data
-  t.blood_prints, t.stunned_turns = 0, 0
-  -- laser data
-  t.laser = { frames = 0, target = make_vec2d(0, 0), dir = 0, tiles = {} }
-  -- frames data
-  t.frames = { n = 0, pattern = "" }
-  -- see input acts and directions
-  t.act = {0, 0}
-  -- player changes to the actormt
-  mt = copymt(actormt)
-  if (pattern == "player") make_player(t, mt)
-
-  setmetatable(t, mt)
-  return t
-end
-
-function make_player(t, mt)
-  t.aquatic = true
-  t.variant = 1
-  function mt.__index.determine_act(self)
-    self.act = copymt(self.input_act)
-    self:turn_to_face_act()
-  end
-end
 
 function actor_methods.act_pos(self)
   local a = self.act[1]
@@ -623,7 +704,7 @@ function actor_methods.turn_to_face_act(self)
 end
 
 function actor_methods.move_type(self)
-  return enemy_variants[self.pattern][self.variant][1]
+  return enemy_variants[self.subpattern][self.variant][1]
 end
 
 function actor_methods.determine_act(self)
@@ -645,6 +726,7 @@ function actor_methods.determine_act(self)
   -- initiate action
   self.act[1] = 1
   self.act[2] = self.facing
+
   -- run variant AI subroutine (whether we about face or circle clockwise; boss movement patterns etc.)
   self:determine_facing()
 
@@ -681,9 +763,9 @@ function actor_methods.determine_facing(self)
   if (mvt == "clockwise") then
     directions_tried = 0
     while apos == self.pos do
-      self.facing += 1
-      if (self.facing > 4) self.facing = 5 - self.facing
-      self.act[2] = self.facing
+      f = self.facing + 1
+      if (f > 4) f = 5 - f
+      self.act[2], self.facing = f, f
       apos = self:act_pos()
       directions_tried += 1
       if (directions_tried > 4) self.stunned_turns = 3; return
@@ -704,16 +786,15 @@ end
 function actor_methods.do_avoidance(self)
   -- if (self.life <= 0) return
   -- if we are moving into a tile that someone else plans on moving into, only one should move there.
-  new_pos = self:act_pos()
+  local new_pos = self:act_pos()
   -- if we arent moving, no need to avoid
-  if (new_pos == self.pos) return
 
   for a in all(global_objects.actor) do
     if (a.life > 0) then
       apos = a:act_pos()
 
       -- TODO: maaaybe some enemy_variants should also dodge the player, so remove last clause for other AIs (this might not matter)
-      if (a != self and apos == new_pos and a.pattern != "player") then
+      if (a != self and apos == new_pos and a.subpattern != "player") then
         self.act = {0, 0}
         return true -- return true if avoidance was done. if so, all actors need to redo avoidance.
       end
@@ -724,21 +805,19 @@ function actor_methods.do_avoidance(self)
 end
 
 function actor_methods.pickup_prints(self)
-  if (self.life <= 0) return
-
   for a in all(global_objects.actor) do
-    if (a.life <= 0 and a.pos == self.pos) self.blood_prints = 5; return
+    if (a.life <= 0 and a.pos == self.pos) self.blood_prints = 6; return
   end
 end
 
-function actor_methods.place_new_prints(self, pattern)
-  if (self.life <= 0 or self.pos:is_water() or self.pos:objects_on_here("trapdoor")) return
+function actor_methods.place_new_prints(self, subpattern)
+  if (self.life <= 0 or self.pos:is_water() or self.pos:objects_on_here(nil, "trapdoor")) return
+  p = self.pos:objects_on_here("prints", subpattern)
 
-  p = self.pos:objects_on_here("prints", pattern)
   if (not p) then
     d = self.act[2]
     if (d <= 0) d = self.facing
-    o = make_object(pattern, self.pos, d)
+    o = make_object(self.pos, {"prints", subpattern, d}, true)
     add(global_objects.prints, o)
     add(global_objects.object, o)
   end
@@ -789,10 +868,12 @@ function actor_methods.attempt_shot(self)
   end
 end
 
-function actor_methods.redirect_existing_prints(self, pattern)
+function actor_methods.redirect_existing_prints(self, subpattern)
   if (self.life <= 0) return
-  p = self.pos:objects_on_here("prints", pattern)
-  if (self.act[2] > 0 and p[1].pattern == pattern) p[1].facing = self.act[2]
+  p = self.pos:objects_on_here("prints", subpattern)
+  if (not p) return
+  -- if (self.act[2] > 0 and p[1].subpattern == pattern) p[1].facing = self.act[2]
+  if (self.act[2] > 0) p[1].facing = self.act[2]
 end
 
 function actor_methods.set_frames(self, pattern, n)
@@ -848,9 +929,8 @@ function actor_methods.draw_sprite(self)
   ssw, ssh, y_shift = 8, 8, 0
   if (self:in_water()) ssh = 4; y_shift = 2
 
-  palswap = enemy_variants[self.pattern][self.variant][2]
+  palswap = enemy_variants[self.subpattern][self.variant][2]
   pal(palswap[1], palswap[2])
-  -- printh("sprite:" ..self:sprite().." px "..p.x.." py "..p.y.." sx "..s.x.." sy "..s.y)
   zspr(self:sprite(), p.x + s.x * 2, p.y + s.y * 2 + y_shift, 2, 1, 1, ssw, ssh)
   pal(palswap[1], palswap[1])
 end
@@ -867,7 +947,7 @@ end
 
 function actor_methods.draw_above(self)
   -- draw speculative lasers
-  anim = animations[self.pattern][7]
+  anim = animations[self.subpattern][7]
   if (self.act[1] == 2) then
     d = self.act[2]
     s = anim[d]
@@ -898,7 +978,7 @@ end
 
 function actor_methods.sprite(self)
   frames_n = self.frames.n
-  pattern = self.pattern
+  pattern = self.subpattern
   frames_pattern = self.frames.pattern
 
   if (frames_n > 0) then
@@ -909,7 +989,7 @@ function actor_methods.sprite(self)
 
   if (self.life <= 0) then
     if (self.life == -2) return 255
-    return animations[self.pattern][5][4]
+    return animations[pattern][5][4]
   end
 
   if (self.stunned_turns > 0) return animations[pattern][8][(frame % 2) + 1]
@@ -965,11 +1045,11 @@ end
 -- end
 
 function get_global_objects(pattern, subpattern)
-  pattern = pattern or "object"
-  subpattern = subpattern or pattern
+  pattern = pattern or subpattern
+
   local objects = {}
   for o in all(global_objects[pattern]) do
-    if (o.pattern == subpattern) add(objects, o)
+    if ((o.subpattern == subpattern) or not subpattern) add(objects, o)
   end
   return objects
 end
@@ -987,7 +1067,7 @@ function vector_methods.actors_on_here(self, exclude_pattern)
   exclude_pattern = exclude_pattern or ""
   local actors = {}
   for a in all(global_objects.actor) do
-    if (a.pos == self and a.pattern != exclude_pattern) add(actors, a)
+    if (a.pos == self and a.subpattern != exclude_pattern) add(actors, a)
   end
   if (#actors > 0) return actors
   return nil
@@ -1040,25 +1120,9 @@ end
 
 vecmt.__index = vector_methods
 
------------------------
---- UI DRAW METHODS ---
------------------------
-function draw_bar(label, current, full, full_color, empty_color, position)
-  barp = position * 10
-  rect(2, 2 + barp, full * 5 + 3, 7 + barp, 6)
-  rectfill(3, 3 + barp, full * 5 + 2, 6 + barp, empty_color)
-  if (current > 0) rectfill(3, 3 + barp, current * 5 + 2, 6 + barp, full_color)
-  print(label, 4, 6 + barp, 7)
-end
-
 --- MISC FUNCTIONS ---
 function check_type(v, t)
   return type(v) == t
-end
-
--- convert vector to screen pixel
-function to_pixel(vec)
-  return make_vec2d(vec.x * 16, vec.y * 16)
 end
 
 -- metatable copy method
@@ -1075,6 +1139,40 @@ function copymt(o)
   return c
 end
 
+-- concat tables
+function concat(t1,t2)
+    local t3 = {}
+    for i=1,#t1 do
+        t3[i] = t1[i]
+    end
+    for i=1,#t2 do
+        t3[#t1+i] = t2[i]
+    end
+    return t3
+end
+
+-- convert vector to screen pixel
+function to_pixel(vec)
+  return make_vec2d(vec.x * 16, vec.y * 16)
+end
+
+-- sprite sheet n to vector position
+function n_to_vec(n)
+  return make_vec2d(8 * (n % 16), 8 * flr(n / 16))
+end
+
+function dump(o)
+   if type(o) == 'table' then
+      local s = '{ '
+      for k,v in pairs(o) do
+         if type(k) ~= 'number' then k = '"'..k..'"' end
+         s = s .. '['..k..'] = ' .. dump(v) .. ','
+      end
+      return s .. '} '
+   else
+      return tostring(o)
+   end
+end
 __gfx__
 00000000000000000000000000000000441444400000000000000000000000000000010080000000080000000000000000000000000000000000000000000000
 0000000000444400000000000104444000411110010444400000000004444000004444100e044400000e08000000000000000000000000000000000000000000
@@ -1164,14 +1262,14 @@ __gfx__
 0000000051000015677766776667767767667677766677770000003000080000615116170199a9100066666000066000006776000a7777a00065000500000050
 01000010110110117777667777777777776677777777777700000030000300007515611719aa9a9100000000000000000000600000aaaa000006650000005000
 01000010000000007777767677767776777777767776777600000000000000007716717601011010000000000000000000000000000000000000000055500000
-0010010001555510005c750000100100001001000100010100100010000000000000000000000000000000000300030300000000000000000000000000000000
-01011010500000050c00c0100101101001011010100110100101c00100000000000000000000000003bbbb303003303000000000000000000000000000000000
+0010010001555510005c750000100100000000000100010100100010000000000000000000000000000000000300030300000000000000000000000000000000
+01011010500000050c00c0100101101000000000100110100101c00100000000000000000000000003bbbb303003303000000000000000000000000000000000
 00000000050550500000000050c00005000bb00000100101011c1100000000000000000000c0ccc0d000000d0030030300000000000000000000000000000000
-010000100000000001000010700000cc01b11b10010010101c011010005585000055b500001c1110003bb3000300303000000000000000000000000000000000
-011111100000000001000c10c700000c01b33b1010010010001101c10000000000000000001111100d0000d03003003000000000000000000000000000000000
+010000100000000001000010700000cc00b11b00010010101c011010005585000055b500001c1110003bb3000300303000000000000000000000000000000000
+011111100000000001000c10c700000c00b33b0010010010001101c10000000000000000001111100d0000d03003003000000000000000000000000000000000
 0000000000000000000c000050000005003bb300001001001100cc010055b5000055b50000ccccc0000bb0000030030000000000000000000000000000000000
-01000010000000000107101001011c100103301001001001011c0110005555000055550000000000010110100300300300000000000000000000000000000000
-0011110005555550005cc50000100100001001001001001010101000000000000000000000000000001001003003003000000000000000000000000000000000
+01000010000000000107101001011c100003300001001001011c0110005555000055550000000000010110100300300300000000000000000000000000000000
+0011110005555550005cc50000100100000000001001001010101000000000000000000000000000001001003003003000000000000000000000000000000000
 00000000000000000000000000000000000001008000000008000000000000000000000000000000000000000000000000000000000000001010101020202020
 00555500000000000005555005555000000555100e055500000e0800000000000022220000000000000000000000000000000000000000000001000100020002
 05555500005555000055555055555000005855508883115000808e80000000000222220000000000000000000000000000000000000000001000100020002000
@@ -1334,32 +1432,35 @@ __label__
 55100101101001033010010000100101101001000010010110100101101001000010011251100101101001000010010110100107c0100101ddd0011665100005
 55555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555
 
+__gff__
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __map__
-ffffffffffffffff000000000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-ffffffffffffff00000000000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-ffffffffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-ffffffffff005465544154546500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00ffff656554b6b5b550b0b5b564000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000075b5b654b6b58471b5540154000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000ff65b6b6b654b0b5b054845400000000000000000000000000000000000000ffffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000064545464655454c0b5b5650000000000000000000000000000000000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000ff406174e0544542b070546400000000000000000000000000000000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ff64646554646454640000000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+6576b6b6b6b64785476400000000000000000000000000000000000000000000000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+6446464657b66646675400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+75b5b58447b65464544154546500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+64b5b5b5b6b6b6b6b550b0b5b564000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+006454b6b6b6b6b58471b576b554000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0072454ab6b6b654b0b5b054845400000000000000000000000000000000000000ffffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000604a54546465b554c0b5b5650000000000000000000000000000000000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000060414574e0465442b070546400000000000000000000000000000000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000ff50b5b5b5b5c077b577f065ffffffffffffffffff645464ffff0000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000ff50b570b570b571b55065ffff546464655476656454b95464ff0000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000405282514673b5b5b550ffff6470b5765454b570c0b5b5f054650000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000050b5b5718463464646730064c077b5b5f0b5b550b05454b047b65400ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000006042b0b58071c0b5b56041614562b56454548643c0b5b5f070b65400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000606142b5b5b5b9b5b068b584b5b554c0b540524161694148b65465000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000606142b5b5f040526174464657b5b547e047b5b550b6b66465640000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000006041784173000054b6b647465460785242b550b6b6b6b640616142ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000000054d0640000ffff54b6478054b5b5b5508454464646465087bb50ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000ff54000000ffffff6450b055b5b0b543865084b5b5b5a0bbbb50ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000000000000000004061416162b550b5b5f0634651b051616161616162ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000050b547c0b5b56042b04673c077b5b5b5b563ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000050b463616146c077b5b463465146516182524200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000050b5478485e0406246b073b5b5b577f0b5b54300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000060615241697862c0b5b547b5708463b0416173ff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000000000000000000000000000ff00ff50b5b4b0b5b0b584b0438681b577f050ff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000405269514673b5b9b550ffff6470b4765454b570c0b5b5f054650000ffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000050b5b5718460464646730064c077b5b5f0b5b550b05454b047b65400ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000006042b0b5b5b0c0b5b56041614562b56454548643c0b5b5f070b65400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000006061420170b553b5b068b584b5b554c0b540524161694148b65465000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000606173b5e0f040526174464657b5b547e047b5b550b6b66465640000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000646378827862b6645465b666465460785242b550b6b6b6b640616142ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000005447d0b9d0b5b6b664b6b6b58054b5b5b5508454464646465087bb50ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000064664646464664b6b6b6b670b055b5b0b581b55084b5b5b5a0bbbb50ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000006454546464547246416162b550b5b5f0634651b051616161616162ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000064b6b6b5b5e0b5e047c0b5b56042b04673c077b5b5b5b563ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000064c0b6b5b5b5b5b560616146c077b5b463465146516182524200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000064c0d0b5b553b5b584b5e0406246b073b5b5b577f0b5b54300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000006485b66454545241697862c0b5b547b5708463b0416173ff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000646400ff00ff50b5b4b0b5b0b584b043b581b577f050ff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000ff60417842b5b5b54078516151b0516162ff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000000050d06342b04062b5b5c077b550ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000000060615273b94386b553b5438650ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
@@ -1387,5 +1488,51 @@ __sfx__
 00080000267300a7102d7202d7200a710000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000800000d740017200d7400d74001720000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0008000027550295502b5502e55032550335503254033530325203351000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __music__
 00 01024344
+
