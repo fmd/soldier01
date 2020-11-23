@@ -173,7 +173,6 @@ function init_level_from_map(lv)
   keydoor_count = 0
 
   actors = {}
-
   multilocks = {}
   scanners = {}
   relays = {}

@@ -1,8 +1,21 @@
+-- important level notes --
+-- level 1: you cannot pick up the diving_suit initially unless you die. a 100% run should make you come back here.
+
 -- big TODO: --
--- no more red scanner green scanner. there is only keydoors and multidoors.
+-- doors open a turn too late on multikeys
+-- make code OK to minify by compressing tables
+-- prints currently drawn above relay. FIX layering for good!
+-- keycards respawn after checkpoint reload! and items! activating a checkpoint should remove picked-up keycards and items.
+--
+
+-- big refactor of global_objects to per-tile objects and create global render list in update
+-- fix rations healing after death (DONE)
+-- no more red scanner green scanner. there is only keydoors and multidoors. (DONE)
 -- get rid of meaningful keys so that minification works
--- maybe a big puzzle room for the gloves
--- reimplementing doors, rations, player items, relays, explosives
+-- maybe a big puzzle room for the gloves (OR NOT)
+-- reimplementing explosives
+-- sorting out level switching
+-- lighting
 -- Codec & Dialogue
 -- Main menu
 -- Sfx overhaul
@@ -16,27 +29,38 @@
 ------------------------------------
 
 -- some global handles for commonly used sprites
+-- require("table_string")
+
 sprite_store = { floor = 181,
                  void = 255,
-                 select = 46 }
+                 select = 46,
+                 choose = 30,
+                 bad = 15,
+                 vault = 31 }
+
+
+
+function read_map_store()
+
+end
 
 -- global object sprite-on-map store
 --        -> pattern  -> subpattern -> sprite #s
 map_store = { actor    = { player        = {17, 1, 33, 49},
                            enemy         = {208, 192, 224, 240} },
-              door     = { door          = {67, 68},
+              door     = { multidoor     = {88, 89},
                            keydoor       = {104, 105} },
-              scanner  = { red_scanner   =  131,
-                           green_scanner =  134 },
               item     = { ration        =  180,
-                           keycard       =  185 },
+                           keycard       =  185,
+                           equip         =  133 },
               object   = { trapdoor      =  176,
-                           relay         =  132 }}
+                           relay         =  132,
+                           multikey      =  136 }}
 
-animations = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/shoot/fly)
-                         {1,2,3,2,5,6,7,4},        -- east (last three=roll/shoot/fly)
-                         {33,34,35,34,37,38,39,36}, -- south (last three=roll/shoot/fly)
-                         {49,50,51,50,53,54,55,52}, -- west (last three=roll/shoot/fly) THESE SHOULD ALWAYS BE RIGHT FLIPPED
+animations = { player = {{17,18,19,18,21,23,22,20}, -- north (last three=roll/shoot/fly)
+                         {1,2,3,2,5,7,6,4},        -- east (last three=roll/shoot/fly)
+                         {33,34,35,34,37,39,38,36}, -- south (last three=roll/shoot/fly)
+                         {49,50,51,50,53,55,55,52}, -- west (last three=roll/shoot/fly) THESE SHOULD ALWAYS BE RIGHT FLIPPED
                          {8,9,10,11}, -- death
                          {12, 13}, -- fall
                          {25, 24, 25, 24}}, -- laser
@@ -52,28 +76,28 @@ animations = { player = {{17,18,19,18,21,22,23,20}, -- north (last three=roll/sh
 
                  door = {{67, 129}, {68, 130}},
               keydoor = {{104, 160}, {105, 161}},
+            multidoor = {{88, 144}, {89, 145}},
+             multikey =  {136, 137},
          blood_prints =  {26, 27, 28, 29},
              trapdoor =  {176, 177},
-          red_scanner =  {131, 134},
-        green_scanner =  {134, 134},
                 relay =  {132, 186},
                ration =   180,
+                equip =   133,
               keycard =   185 }
 
 -- enemy variants data
 enemy_variants = {player = {{"player", {5, 5}}},
                   enemy = {{"clockwise", {5, 13}}, -- variant 1
                            {"line", {5, 2}}, -- variant 2
-                           {"still", {5, 5}} }}  -- variant 3
-
-checkpoint_inventory = { keycard_level = 0 }
-inventory = {}
+                           {"still", {5, 5}},
+                           {"cc", {5, 6}} }}  -- variant 3
 
 -- misc global vars
 turn, chunk, frame, biframe, last_frame = 0,0,1,1,0
 global_time, turn_start = nil, nil
 input_act, input_dir, input_down = 0, 0, {false,false,false,false,false,false}
 last_camera_pos = { x = 0, y = 0 }
+queued_input = nil
 
 --- / global level and sprite data ---
 --------------------------------------
@@ -81,11 +105,13 @@ last_camera_pos = { x = 0, y = 0 }
 ---  (these persist between resets)
 -- global level-on-map store
 -- edity vars
-levels = {{0,0,32,30}}
-level_items = {{"gloves"}}
-level_keydoors = {{1,2,3}}
-level_enemy_variants = {{2, 2, 3,3, 2,2, 3,2, 1,2,2, 1, 2,1,3, 3,3, 1, 1,2,2,3, 3,3, 3,1,3,2, 1, 3, 3,1, 1}}
+levels = {{0,0,36,30}}
+level_items = {{"diving_suit", "gloves"}}
+level_keydoors = {{2,1,1,2,2}} --
+level_multidoors = {{ {{11,18}}, {{23,24}, {25,27}} }} -- positions
+level_enemy_variants = {{2, 2, 3,3,3,3, 2,4, 3,2, 1,4, 1, 1,3, 2, 1, 2,2,3, 3, 3,2, 1, 3, 1, 3,1, 1}}
 
+level_loaded = false
 current_level = 0 -- don't touch, change param of load_level instead
 -- TODO: refactor above vars into level class?
 game_speed = 2.5 -- edit me!
@@ -103,25 +129,35 @@ local vector_methods = {}
 --- / inter-level storage globals ----
 --------------------------------------
 --- checkpoint storage globals ---
-player = nil
 
 -- store global objects ALWAYS PATTERN TODO: we should probably clone and empty out map_store for this.
-global_objects = { actor = {},   -- includes player and enemy patterns
-                   object = {},  -- includes all of the following:
+function reset_global_objects()
+  -- for k, a in pairs(global_objects[type]) do
+  --   del(global_objects[type]
+  -- end
+  global_objects = { actor = {},   -- includes player and enemy patterns
+                     object = {},  -- includes all of the following:
 
-                   -- the following are all "objects"
-                   relay = {},    -- relay should be own item?
-                   door = {},     -- includes doors, keydoors and multilock doors.
-                   scanner = {},
-                   trapdoor = {},
-                   prints = {},   -- includes "blood_prints" and "snow_prints" patterns?
-                   item = {}}     -- ration, keycard, equipment (TODO: unimplemented)
+                     -- the following are all "objects"
+                     relay = {},    -- relay should be own item?
+                     door = {},     -- includes doors, keydoors and multilock doors.
+                     trapdoor = {},
+                     prints = {},   -- includes "blood_prints" and "snow_prints" patterns?
+                     item = {},
+                     multikey = {}}
 
-global_object_counts = {}
-mset_restore = {} -- we use mset to replace the map while it's in play, so we store a list of replaced tiles to put back when the level is reset
+   inventory = {}
+   global_object_counts = {}
+   queued_input = nil
+end
+ -- we use mset to replace the map while it's in play, so we store a list of replaced tiles to put back when the level is reset
 -- mset_restore format: {position_vector,tile} (referred to as [1],[2])
---- / checkpoint storage globals ---
---------------------------------------
+mset_restore = {}
+checkpoint = { active_relays = {},
+               inventory = { keycard_level = 0,
+                             gloves = false,
+                             socom = false } }
+
 
 -------------------------------------------------------
 -- SECTION 1: on init, simply load the first level. ---
@@ -134,7 +170,11 @@ end
 -- SECTION 2: update cycle deals with turns ---
 -----------------------------------------------
 function _update60()
-  if (not player) return
+  if (not level_loaded or not player) return
+
+  local new_input = take_input()
+  if (new_input and new_input[1] > 1 and player.life <= 0) load_level(current_level); return -- TODO: Refactor this crappy restart
+  if (new_input and not queued_input) queued_input = new_input
 
   update_frame()
 
@@ -144,8 +184,13 @@ function _update60()
   end
 
   if (player.life > 0) then
-    player.input_act = take_input()
+    if (queued_input and queued_input[1] > 4) queued_input[1] -= 3
+    player.input_act = queued_input
+    queued_input = nil
     if (not player.input_act) return
+
+    player:determine_act()
+    if (player:act_pos() == player.pos and player.input_act[1] == 1) return
     start_turn(); player.input_act = nil
   end
 
@@ -158,7 +203,7 @@ end
 function _draw()
   cls()
 
-  if (not player) return
+  if (not level_loaded or not player) return
   local p = to_pixel(player.pos)
 
   -- center camera
@@ -177,17 +222,67 @@ function _draw()
 
   -- sneaky draw-layering to avoid excessive splitting of objects (TODO: for now...)
   draw_set(global_objects.object)
-  draw_set(concat(global_objects.actor, player))
+  draw_set(global_objects.actor)
+  draw_set({player})
 
   -- debug ui
-  if input_dir > 0 and input_act > 0 then
-    local ui = to_pixel(dir_to_vec(input_dir) + player.pos)
-    zspr(sprite_store.select, ui.x, ui.y)
+  --
+  --
+  -- local current_act = player.input_act
+  -- if current_act and current_act[1] == 1 then
+  --   v = v + dir_to_vec(current_act[2])
+  --   local ui = to_pixel(v)
+  --   zspr(sprite_store.select, ui.x, ui.y)
+  -- end
+
+  -- -- TODO: refactor how we display the movement indicator to reduce tokens
+
+  local v = make_vec2d(player.pos.x, player.pos.y)
+  local marker = sprite_store.select
+
+  local bad_act = false
+  local player_act = player.act
+  if player_act and player_act[1] == 1 then
+    local p = v + dir_to_vec(player_act[2])
+    if (p:is_vault_gate() and inventory.gloves) p = p + dir_to_vec(player_act[2])
+    if (p:is_wall()) bad_act = true
+    if (not bad_act) v = p
+    -- local ui = to_pixel(v)
+    -- zspr(sprite_store.select, ui.x, ui.y)
   end
 
-  -- debug action
-  if (input_act == 5) zspr(57, p.x, p.y)
-  if (input_act == 6) zspr(56, p.x, p.y)
+  if queued_input and queued_input[1] == 1 then
+    local p = v + dir_to_vec(queued_input[2])
+    if (p:is_vault_gate() and inventory.gloves) p = p + dir_to_vec(queued_input[2]);
+    if (p:is_wall()) bad_act = true
+    if (not bad_act) v = p
+    -- local ui = to_pixel(v)
+    -- zspr(sprite_store.select, ui.x, ui.y)
+  end
+  --
+  local ui = to_pixel(v)
+
+  bad_act = false
+  if (v != player.pos) zspr(marker, ui.x, ui.y)
+
+  if input_act == 1 and not queued_input then
+    marker = sprite_store.select
+    local vault_act = false
+
+    local p = dir_to_vec(input_dir) + v
+    if (p:is_wall()) bad_act = true
+    if (p:is_vault_gate() and inventory.gloves) bad_act = false; vault_act = true;
+    local ui = to_pixel(p)
+
+    marker = sprite_store.choose
+    if (bad_act) marker = sprite_store.bad
+    if (vault_act) marker = sprite_store.vault
+    zspr(marker, ui.x, ui.y)
+  end
+
+  -- TODO: refactor how we display non-movement actions
+  if (input_act == 5) zspr(57, p.x + 4, p.y - 7, 1)
+  if (input_act == 6) zspr(56, p.x + 4, p.y - 7, 1)
 
   camera(0,0)
 
@@ -214,14 +309,16 @@ end
 
 -- load a level.
 function load_level(l)
-  inventory = copymt(checkpoint_inventory)
-  global_object_counts = {}
+  level_loaded = false
 
-  enemy_count, keydoor_count = 0, 0 -- these are items with additional level data and have to be counted!
-  current_level = l
+  reset_global_objects()
+  player = nil
 
+  inventory = copymt(checkpoint.inventory)
   global_time = time()
-  restore_msets(l)
+
+  restore_msets(current_level)
+  current_level = l
 
   for y = 0, levels[l][4] - 1, 1 do
     for x = 0, levels[l][3] - 1, 1 do
@@ -234,20 +331,28 @@ function load_level(l)
       end
     end
   end
+
+  c = checkpoint.current_relay
+  if (c) local a = make_actor(make_vec2d(c.x, c.y), {"actor", "player", 2}); add(global_objects.actor, a); player = a
+
+  level_loaded = true
 end
 
 -- extract_object_from_map makes objects ready to start the level from what's on the pico8 map.
 -- it returns the code to replace it with on the map.
 -- o is passed from get_tile_pattern
 function extract_object_from_map(pos, opts)
-  -- make_PATTERN(PATTERN, SUBPATTERN, POSITION FACING_OR_SPRITENUM)
+  -- make_PATTERN(pos, { PATTERN, SUBPATTERN, FACING })
   -- make_PATTERN splits INSIDE (so we don't have to replicate setmetatable calls in each subpattern make)
   -- so inside make_PATTERN we need to do make_SUBPATTERN.
   local object = {}
   -- printh("making " .. opts[1] .. " of type " .. opts[2])
   if (opts[1] == "actor") then
-    object = make_actor(pos, opts)
-    add(global_objects.actor, object)
+    if opts[2] != "player" or not checkpoint.current_relay then
+      object = make_actor(pos, opts)
+      add(global_objects.actor, object)
+      if (opts[2] == "player") player = object
+    end
   else
     object = make_object(pos, opts)
     if (opts[1] == "object") then
@@ -274,12 +379,13 @@ function make_object(pos, opts, skip_submatch)
   mt = copymt(objectmt)
   mk = "make_"..t.subpattern
   printh(mk)
-  mmm = make_methods[mk]
-  if (not skip_submatch) mmm(t, mt); add(global_objects.object, t)
-  setmetatable(t, mt)
 
   if (not global_object_counts[t.subpattern]) global_object_counts[t.subpattern] = 0
   global_object_counts[t.subpattern] += 1
+
+  mmm = make_methods[mk]
+  if (not skip_submatch) mmm(t, mt); add(global_objects.object, t)
+  setmetatable(t, mt)
   return t
 end
 
@@ -299,7 +405,7 @@ function make_actor(pos, opts)
   -- see input acts and directions
   t.act = {0, 0}
   -- player changes to the actormt
-  mt = copymt(actormt)
+  local mt = copymt(actormt)
   if (opts[2] == "player") make_methods.make_player(t, mt)
 
   setmetatable(t, mt)
@@ -317,7 +423,20 @@ function make_methods.make_player(t, mt)
     self:turn_to_face_act()
   end
 
-  player = t
+  -- TODO: generic this out for vaulting enemies?
+  function mt.__index.act_pos(self)
+    local act_pos = actor_methods.act_pos(self)
+    if (not inventory.gloves or not (self.act[2] > 0)) return act_pos
+    local d = dir_to_vec(self.act[2])
+
+    if (d + self.pos):is_vault_gate() and self.act[1] == 1 then
+      local vault_pos = d + d + self.pos
+      if (vault_pos:is_wall()) return make_vec2d(self.pos.x,self.pos.y)
+      return vault_pos
+    end
+
+    return act_pos
+  end
 end
 
 -- generic -- only subpattern items (keycards, rations) are made, which call this.
@@ -344,27 +463,77 @@ function make_methods.make_door(t, mt)
   end
   function mt.__index.draw_above(self)
     local p = to_pixel(self.pos)
-    zspr(animations[t.subpattern][t.facing][(1 - t.solid) + 1], p.x, p.y)
+    zspr(animations[self.subpattern][self.facing][(1 - self.solid) + 1], p.x, p.y)
+  end
+end
+
+function make_methods.make_multidoor(t, mt)
+  t.scanner_positions = level_multidoors[current_level][global_object_counts["multidoor"]]
+  make_methods.make_door(t, mt)
+  function mt.__index.activate(self)
+    if (self.solid == 0) return
+    local open = true
+    for p in all(self.scanner_positions) do
+      local s = make_vec2d(p[1], p[2])
+      local o = s:objects_on_here(nil,"multikey")[1]
+      if (not o or o.activated != 1) open = false
+    end
+
+    if (open) self.solid = 0; sfx(16)
   end
 end
 
 function make_methods.make_keydoor(t, mt)
+  t.keycard_level = level_keydoors[current_level][global_object_counts["keydoor"]]
   make_methods.make_door(t, mt)
-  t.key_level = level_keydoors[current_level][global_object_counts[t.subpattern]]
+  function mt.__index.activate(self)
+    if (self.solid == 0) return
+    if self.pos:is_adjacent(player.pos) then
+      if inventory.keycard_level >= self.keycard_level then
+        sfx(16)
+        self.solid = 0
+      else
+        sfx(17)
+      end
+    end
+  end
 end
 
 function make_methods.make_relay(t, mt)
-end
+  t.active = 0
+  for p in all(checkpoint.active_relays) do
+    if t.pos == p then
+      t.active = 1
+    end
+  end
 
-function make_methods.make_red_scanner(t, mt)
-end
+  local c = checkpoint.current_relay
 
-function make_methods.make_green_scanner(t, mt)
+  function mt.__index.activate(self)
+    if (player.life <= 0 or player.pos != self.pos or self.active != 0) return
+      sfx(18)
+      self.active = 1
+
+      v = make_vec2d(self.pos.x, self.pos.y)
+      del(checkpoint.active_relays, v)
+      add(checkpoint.active_relays, v)
+
+      -- ammo and life refill on checkpoint
+      player.life = player.max_life
+      -- add o2 calc for diving_suit here
+      checkpoint.inventory = copymt(inventory)
+      checkpoint.current_relay = copymt(self.pos)
+  end
+
+  function mt.__index.sprite(self)
+    return animations.relay[self.active + 1]
+  end
 end
 
 function make_methods.make_keycard(t, mt)
   make_item(t, mt)
   function mt.__index.pick_up(self)
+    if (player.life <= 0) return
     inventory.keycard_level += 1
     sfx(14)
   end
@@ -373,8 +542,40 @@ end
 function make_methods.make_ration(t, mt)
   make_item(t, mt)
   function mt.__index.pick_up(self)
+    if (player.life <= 0) return
     player.life = player.max_life
     sfx(15)
+  end
+end
+
+function make_methods.make_equip(t, mt)
+  make_item(t, mt)
+  t.equip = level_items[current_level][global_object_counts["equip"]]
+  function mt.__index.pick_up(self)
+    inventory[t.equip] = true
+    sfx(21)
+  end
+end
+
+function make_methods.make_multikey(t, mt)
+  t.activated = 0
+
+  function mt.__index.draw(self)
+    local p = to_pixel(self.pos)
+    zspr(animations[self.subpattern][self.activated + 1], p.x, p.y)
+  end
+
+  function mt.__index.activate(self)
+    local actors = self.pos:actors_on_here()
+    if (not actors) return
+
+    for a in all(actors) do
+      if (a.life > 0 and a != player) then
+        self.activated = 1 - self.activated
+        sfx(20 - self.activated) -- cheeky!
+        return
+      end
+    end
   end
 end
 
@@ -470,14 +671,16 @@ function end_turn()
   turn_start = nil
   global_time = time()
 
+  if (player.blood_prints >= 1) player:redirect_existing_prints("blood_prints")
   for a in all(global_objects.actor) do
-    if (a.blood_prints >= 1) a:redirect_existing_prints("blood_prints"); a.blood_prints -= 1
     a:tick_oxygen()
+    if (a.blood_prints >= 1) a.blood_prints -= 1
     if (a != player) a:attempt_act(1) -- attempt all moves for actors first
   end
 
   player:attempt_melee()
   player:attempt_act(1) -- we have to attempt the player's move last
+
 
   for a in all(global_objects.actor) do
     a:attempt_act(2) -- attempt all shots last
@@ -573,11 +776,15 @@ end
 
 function draw_map()
   for y = levels[current_level][2], levels[current_level][4] - 1, 1 do
-    for x = levels[current_level][1], levels[current_level][3] - 1, 1 do
-      local v = make_vec2d(x, y)
-      local pp = to_pixel(v)
-      local tile = lmapget(v)
-      if (tile > 0) zspr(tile, pp.x, pp.y)
+    if y < player.pos.y + 5 and y > player.pos.y - 5 then
+      for x = levels[current_level][1], levels[current_level][3] - 1, 1 do
+        if x > player.pos.x - 5 and x < player.pos.x + 5 then
+          local v = make_vec2d(x, y)
+          local pp = to_pixel(v)
+          local tile = lmapget(v)
+          if (tile > 0) zspr(tile, pp.x, pp.y)
+        end
+      end
     end
   end
 end
@@ -605,28 +812,6 @@ end
 ----------------------
 --- OBJECT METHODS ---
 ----------------------
-
--- function make_scanner(t, mt)
---   function mt.__index.activate(self)
---     if (not self:stepped_on()) return
---     self:unlock_adjacent_doors()
---   end
---
---   function mt.__index.stepped_on(self)
---     for a in all(global_objects.actor) do
---       if (a.pos == self.pos) return true
---     end
---     return false
---   end
---
---   function mt.__index.unlock_adjacent_doors(self)
---     for door in all(self.pos:adjacent_objects("door")) do
---       if (door.solid) sfx(16); door.solid = 0
---     end
---   end
---   function mt.__index.draw(self)
---   end
--- end
 
 function default_sprite(subpattern, index)
   s = animations[subpattern]
@@ -667,10 +852,10 @@ function actor_methods.act_pos(self)
   local a = self.act[1]
   local d = self.act[2]
   if (d == 0) return self.pos
-  check_point = self.pos + dir_to_vec(d)
+  local test_point = self.pos + dir_to_vec(d)
 
   if a == 1 then
-    if (not check_point:is_wall() and (not check_point:is_water() or self.aquatic)) return check_point
+    if (not test_point:is_wall() and (not test_point:is_water() or self.aquatic)) return test_point
   end
 
   return self.pos
@@ -680,7 +865,9 @@ function actor_methods.attempt_melee(self)
   if (self.life <= 0) return
   attack_point = self:act_pos()
   h = attack_point:actors_on_here("player")
-  if (h) h[1].stunned_turns = 3; return
+  for a in all(h) do
+    if (a.life > 0) a.stunned_turns = 3
+  end
 end
 
 function actor_methods.tick_oxygen(self)
@@ -705,6 +892,11 @@ function actor_methods.move_type(self)
 end
 
 function actor_methods.determine_act(self)
+  if (self.life <= 0) then
+    self.act = {a = 0, d = 0}
+    return
+  end
+
   -- wait out any stuns. TODO: move this so it affects player also. it's an early returner
   if (self.stunned_turns > 0) then
     self.stunned_turns -= 1
@@ -734,7 +926,7 @@ function actor_methods.determine_act(self)
   tiles = self:tiles_ahead(previous_facing, true)
   for k, tile in pairs(tiles) do
     if (player.pos == tile) then
-      self.act = {2, previous_facing}  -- shoot
+      self.act = {2, previous_facing}
       self.facing = previous_facing
       sfx(10)
       return
@@ -745,7 +937,7 @@ function actor_methods.determine_act(self)
   tiles = self:tiles_ahead(self.facing, true)
   for k, tile in pairs(tiles) do
     if (player.pos == tile) then
-      self.act[1] = 2 -- shoot
+      self.act[1] = 2
       sfx(10)
       return
     end
@@ -755,12 +947,12 @@ function actor_methods.determine_act(self)
 end
 
 function actor_methods.determine_facing(self)
-  mvt = self:move_type()
-  apos = self:act_pos()
+  local mvt = self:move_type()
+  local apos = self:act_pos()
   if (mvt == "clockwise") then
-    directions_tried = 0
+    local directions_tried = 0
     while apos == self.pos do
-      f = self.facing + 1
+      local f = self.facing + 1
       if (f > 4) f = 5 - f
       self.act[2], self.facing = f, f
       apos = self:act_pos()
@@ -778,9 +970,22 @@ function actor_methods.determine_facing(self)
       self.act[2], self.facing = f, f
     end
   end
+
+  if (mvt == "cc") then
+    local directions_tried = 0
+    while apos == self.pos do
+      f = self.facing - 1
+      if (f < 1) f = 4
+      self.act[2], self.facing = f, f
+      apos = self:act_pos()
+      directions_tried += 1
+      if (directions_tried > 4) self.stunned_turns = 3; return
+    end
+  end
 end
 
 function actor_methods.do_avoidance(self)
+  if (self.act[1] > 1) return false
   -- if (self.life <= 0) return
   -- if we are moving into a tile that someone else plans on moving into, only one should move there.
   local new_pos = self:act_pos()
@@ -905,9 +1110,8 @@ end
 
 function actor_methods.tiles_ahead(self, d, ignore_glass)
   ignore_glass = ignore_glass or false
-  d = d or self.facing
+  if (d <= 0) d = self.facing
   p = self.pos + dir_to_vec(d)
-
   collected = {}
   i = 1
 
@@ -945,8 +1149,10 @@ end
 function actor_methods.draw_above(self)
   -- draw speculative lasers
   anim = animations[self.subpattern][7]
-  if (self.act[1] == 2) then
+  if (self.act[1] == 2 or (self == player and input_act == 5 and turn_start == nil)) then
     d = self.act[2]
+    if (self == player and input_act == 5) d = input_dir
+    if (d <= 0) d = self.facing
     s = anim[d]
 
     tiles = self:tiles_ahead(d, true)
@@ -991,11 +1197,16 @@ function actor_methods.sprite(self)
 
   if (self.stunned_turns > 0) return animations[pattern][8][(frame % 2) + 1]
 
+  anim = animations[pattern][self.facing]
+
   if (turn_start != nil) then
-    anim = animations[pattern][self.facing]
     if (self.act[1] == 1) return anim[frame+1]
-    if (self.act[1] == 2) return anim[6]
   end
+
+  -- TODO: refactor this into player sprite method
+  if (input_act == 6 and self == player and turn_start == nil) return animations[pattern][input_dir][1]
+  if (input_act == 5 and self == player and turn_start == nil) anim = animations[pattern][input_dir]
+  if (self.act[1] == 2 or (input_act == 5 and self == player and turn_start == nil)) return anim[6]
 
   return default_sprite(pattern, self.facing)
 end
@@ -1034,12 +1245,18 @@ end
 --   printh(msg.." ("..self.x..", "..self.y..")")
 -- end
 
--- function vector_methods.is_adjacent(self, pos)
---   return ((self.x == pos.x + 1 and self.y == pos.y) or
---     (self.x == pos.x - 1 and self.y == pos.y) or
---     (self.x == pos.x and self.y == pos.y + 1) or
---     (self.x == pos.x and self.y == pos.y - 1))
--- end
+-- TODO: figure this out for lighting
+function vector_methods.distance_to(self, pos)
+ local v = pos - self
+ return sqrt(v.x * v.x + v.y * v.y)
+end
+
+function vector_methods.is_adjacent(self, pos)
+  return ((self.x == pos.x + 1 and self.y == pos.y) or
+    (self.x == pos.x - 1 and self.y == pos.y) or
+    (self.x == pos.x and self.y == pos.y + 1) or
+    (self.x == pos.x and self.y == pos.y - 1))
+end
 
 function get_global_objects(pattern, subpattern)
   pattern = pattern or subpattern
@@ -1087,10 +1304,15 @@ function vector_methods.is_glass(self)
 end
 
 function vector_methods.is_wall(self)
-  a = self:objects_on_here("door")
+  a = self:objects_on_here("door") -- TODO: consider breaking global_objects into their map positions properly as a refactor. this could save draw calls too.
   if (a and a[1].solid == 1) return true
   m = lmapget(self)
   return (m >= 64 and m <= 127)
+end
+
+function vector_methods.is_vault_gate(pos)
+  m = lmapget(pos)
+  return (m == 70 or m == 71)
 end
 
 function vector_methods.is_water(pos)
