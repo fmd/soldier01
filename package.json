@@ -1,0 +1,14 @@
+{
+  "name": "soldier01",
+  "version": "1.0.0",
+  "description": "to install luamin on a PICO-8 branch",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "hsandt",
+  "license": "MIT",
+  "dependencies": {
+    "luamin": "github:hsandt/luamin#feature/pico8"
+  }
+}
