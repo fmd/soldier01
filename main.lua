@@ -1,40 +1,14 @@
--- sprite_store = { floor = 181,
---                  void = 255,
---                  select = 46,
---                  choose = 30,
---                  bad = 15,
---                  vault = 31 }
-
--- map_store = { actor_player    = {17, 1, 33, 49},
---               actor_enemy     = {208, 192, 224, 240},
---               door_multidoor  = {88, 89},
---               door_keydoor    = {104, 105},
---               item_ration     =  180,
---               item_keycard    =  185,
---               item_equip      =  133,
---               object_trapdoor =  176,
---               object_relay    =  132,
---               object_multikey =  136 }
-
-function dump(o)
-   if type(o) == 'table' then
-      local s = '{ '
-      for k,v in pairs(o) do
-         if type(k) ~= 'number' then k = '"'..k..'"' end
-         s = s .. '['..k..'] = ' .. dump(v) .. ','
-      end
-      return s .. '} '
-   else
-      return tostring(o)
-   end
-end
+-- TODO:
+-- visual glitch with speculative lasers & above-head keypress indicator
+-- equips
+-- level switching
+-- mset_reject items and keycards
 
 raw_sprite_store = "floor=181|void=255|select=46|choose=30|bad=15|vault=31"
-raw_map_store = "actor_player=17,1,33,49|actor_enemy=208,192,224,240|door_multidoor=88,89|door_keydoor=104,105|item_ration=180|item_keycard=185|item_equip=133|object_trapdoor=176|object_relay=132|object_multikey=136"
-raw_animations = "player=17,18,19,18,21,23,22,20:1,2,3,2,5,7,6,4:33,34,35,34,37,39,38,36:49,50,51,50,53,55,55,52:8,9,10,11:12,13:25,24,25,24|enemy=208,209,210,209,210,211,211,1:192,193,194,193,194,195,195,1:224,225,226,225,226,227,227,1:240,241,242,241,242,243,243,1:196,197,198,199:230,231:41,40,41,40:228,229|door=67,129:68,130|keydoor=104,160:105,161|multidoor=88,144:89,145|multikey=136,137|blood_prints=26,27,28,29|trapdoor=176,177|relay=132,186|ration=180|equip=133|keycard=185"
+raw_map_store = "actor_player=17,1,33,49|actor_enemy_clock=208,192,224,240|actor_enemy_line=209,193,225,241|actor_enemy_cc=210,194,226,242|actor_enemy_still=211,195,227,243|door_multidoor=88,89|door_keydoor=104,105|item_ration=180|item_keycard=185|item_equip=133|object_trapdoor=176|object_relay=132|object_multikey=136"
+raw_animations = "player=17,18,19,18,21,23,22,20:1,2,3,2,5,7,6,4:33,34,35,34,37,39,38,36:49,50,51,50,53,55,54,52:8,9,10,11:12,13:25,24,25,24|enemy=208,209,210,209,210,211,211,1:192,193,194,193,194,195,195,1:224,225,226,225,226,227,227,1:240,241,242,241,242,243,243,1:196,197,198,199:230,231:41,40,41,40:228,229,244,245|door=67,129:68,130|keydoor=104,160:105,161|multidoor=88,144:89,145|multikey=136,137|blood_prints=26,27,28,29|trapdoor=176,177|relay=132,186|ration=180|equip=133|keycard=185"
 raw_global_objects = "actor=nil|object=nil|relay=nil|door=nil|trapdoor=nil|prints=nil|item=nil|multikey=nil"
 --
-
 function unmarshal_store(raw_store)
   local store = {}
   elements = split(raw_store, "|")
@@ -67,54 +41,45 @@ function unmarshal_store(raw_store)
       end
     end
   end
-
   return store
 end
--- --
+--
 sprite_store = unmarshal_store(raw_sprite_store)
 map_store = unmarshal_store(raw_map_store)
 animations = unmarshal_store(raw_animations)
 
--- animations = { player = {{17,18,19,18,21,23,22,20},
---                          {1,2,3,2,5,7,6,4},
---                          {33,34,35,34,37,39,38,36},
---                          {49,50,51,50,53,55,55,52},
---                          {8,9,10,11},
---                          {12,13},
---                          {25,24,25,24}},
---
---                 enemy = {{208,209,210,209,210,211,211,1},
---                          {192,193,194,193,194,195,195,1},
---                          {224,225,226,225,226,227,227,1},
---                          {240,241,242,241,242,243,243,1},
---                          {196,197,198,199},
---                          {230, 231},
---                          {41, 40, 41, 40},
---                          {228, 229}},
---
---                  door = {{67, 129}, {68, 130}},
---               keydoor = {{104, 160}, {105, 161}},
---             multidoor = {{88, 144}, {89, 145}},
---              multikey =  {136, 137},
---          blood_prints =  {26, 27, 28, 29},
---              trapdoor =  {176, 177},
---                 relay =  {132, 186},
---                ration =   180,
---                 equip =   133,
---               keycard =   185 }
-
-enemy_variants = {player = {{"player", {5, 5}}},
-                  enemy = {{"clockwise", {5, 13}},
-                           {"line", {5, 2}},
-                           {"still", {5, 5}},
-                           {"cc", {5, 6}} }}
+enemy_variants = { player = { player = {5, 5} },
+                   enemy = { clock = {5, 13},
+                             line = {5, 2},
+                             cc = {5, 6},
+                             still = {5, 5} } }
 
 levels = {{0,0,36,30}}
 level_items = {{"diving_suit", "gloves"}}
 level_keydoors = {{2,1,1,2,2}}
-level_multidoors = {{ {{11,18}}, {{23,24}, {25,27}} }} -- positions
-level_enemy_variants = {{2, 2, 3,3,3,3, 2,4, 3,2, 1,4, 1, 1,3, 2, 1, 2,2,3, 3, 3,2, 1, 3, 1, 3,1, 1}}
+level_multidoors = {{ {{10,17}, {12,17}}, {{23,24}, {25,27}} }} -- positions
+level_cutscene_triggers = {{{1,3,1,false},
+                            {8,5,2,true},
+                            {8,12,5,true}}} -- position,cutscene,is_relay?
 
+--          focus_pos,messages,            effect,next,focusmsg
+characters = {"soldier","colonel","rose"}
+cutscenes = {{{8,5},"2|soldier, do you read me?|3|he's badly hurt, colonel.|2|soldier, if you can hear me, go to the relay. you'll have to swim through the water.|3|good luck, soldier.",0,0,3},
+             {{10,6},"1|colonel, do you read me?|2|loud and clear soldier, but watch out. there are trapdoors ahead.",0,3,2},
+             {{11,11},"2|blue keycards unlock blue doors. watch out for enemies.|1|got it.|3|colonel, his vitals don't look good.",0,4,1},
+             {{11,8},"2|soldier, press \151 to wait a turn. move into the same tile as an enemy for a melee attack.|3|soldier, this is important: time your moves in advance.",0,0,1},
+             {{11,17},"2|good work, soldier. enemies will follow the direction of bloody footprints beneath them.|3|ahead lies a multi-lock door. you must lead an enemy over these scanners so that they both turn green. this will unlock the door.",0,0,2}}
+
+function split_cutscene(text, n)
+  bits = split(text, "|")
+  if #bits < n * 2 then return end
+  return {bits[n*2 - 1], bits[n*2]}
+end
+
+-- cutscene globals TODO: refactor
+cutscene = 0
+
+bar_frames = {} -- stores frame info for shaking bars
 turn, chunk, frame, biframe, last_frame = 0,0,1,1,0
 global_time, turn_start = nil, nil
 input_act, input_dir, input_down = 0, 0, {false,false,false,false,false,false}
@@ -123,7 +88,6 @@ queued_input = nil
 
 level_loaded = false
 current_level = 0
-game_speed = 2.5 -- edit me!
 
 local actormt = {}
 local objectmt = {}
@@ -133,7 +97,6 @@ local make_methods = {}
 local object_methods = {}
 local actor_methods = {}
 local vector_methods = {}
-
 
 function reset_global_objects()
    global_objects = unmarshal_store(raw_global_objects)
@@ -155,19 +118,67 @@ checkpoint = { active_relays = {},
 
 function _init()
   load_level(1)
+  trigger_cutscenes()
 end
 
 function _update60()
   if not level_loaded or not player then return end
 
   local new_input = take_input()
-  if new_input and new_input[1] > 1 and player.life <= 0 then load_level(current_level); return end -- TODO: Refactor this crappy restart end
+  if new_input and new_input[1] > 1 and player.life <= 0 and game_speed == 3 then load_level(current_level); return end -- TODO: Refactor this crappy restart end
   if new_input and not queued_input then queued_input = new_input end
+
+  if cutscene > 0 then
+    cutscene_diff = flr((time() - cutscene_time) * 1000)
+    cutscene_total_diff = cutscene_total_diff + cutscene_diff
+
+    msg_chars = cutscenes[cutscene][3]
+    msg_parts = split_cutscene(cutscenes[cutscene][2], cutscene_msg)
+    if not msg_parts then cutscene = cutscenes[cutscene][4]; reset_cutscenes(); return end -- if we've gone out of bounds, skip to next cutscene.
+    character = msg_parts[1]
+    msg = msg_parts[2]
+
+    printmsg = {""}
+    printline = 1
+    for i=1,#msg,1 do
+      if msg_chars >= i then
+        local c = sub(msg,i,i)
+        local n = #printmsg[printline]
+        if not (n == 0 and c == " ") then printmsg[printline] = printmsg[printline]..c end
+        if n >= 26 and (c == " " or c == "," or c == ".") then printline = printline + 1; printmsg[printline] = "" end -- TODO: refactor punctuation splitting
+      end
+    end
+
+    if cutscene_total_diff > 50 then
+      msg_chars = msg_chars + 1
+      cutscenes[cutscene][3] = msg_chars
+      cutscene_total_diff = 0
+
+      if msg_chars < #msg then
+        sfx(22)
+        if queued_input and queued_input[1] > 1 then
+          cutscenes[cutscene][3] = #msg
+        end
+      else
+        if queued_input and queued_input[1] > 1 then
+          cutscene_msg = cutscene_msg + 1
+          cutscenes[cutscene][3] = 0
+
+
+        end
+      end
+
+      queued_input = nil
+    end
+
+    cutscene_time = time()
+    return
+  end
 
   update_frame()
 
   if turn_start then
-    if chunk > 999 then end_turn() end
+    if chunk > 999 then end_turn(); if player.frames.n == 0 then game_speed = 3 end end -- TODO: delay death noise for player
     return
   end
 
@@ -185,7 +196,7 @@ function _update60()
     start_turn(); player.input_act = nil
   end
 
-  if not turn_start and chunk > 499 then start_turn() end -- allow a little "thinking" time if player is dead
+  if not turn_start and chunk > 499 then start_turn(); end -- allow a little "thinking" time if player is dead
 end
 
 ------------------------------------------------------
@@ -196,28 +207,38 @@ function _draw()
 
   if not level_loaded or not player then return end
   local p = to_pixel(player.pos)
+  local ct_focus = false
+  local ct_pos = make_vec2d(0,0)
+  local ct = cutscenes[cutscene]
+  if cutscene > 0 then -- focus at the focus msg.
+    ct_focus = cutscene_msg == ct[5]
+    ct_pos = make_vec2d(ct[1][1],ct[1][2])
+    if ct_focus then p = to_pixel(make_vec2d(ct_pos.x, ct_pos.y + 0.5)) end
+  end
 
   -- center camera
   buffer = make_vec2d(0,0)
   if p ~= last_camera_pos then -- player has new pos, we transition
     buffer = p - last_camera_pos
-    buffer.x = -flr(buffer.x / 1.5)
-    buffer.y = -flr(buffer.y / 1.5)
+    buffer.x = -buffer.x / 1.12
+    buffer.y = -buffer.y / 1.12
+    if abs(buffer.x) < 0.1 then buffer.x = 0 end
+    if abs(buffer.y) < 0.1 then buffer.y = 0 end
   end
-  camera(p.x + buffer.x - 56, p.y + buffer.y - 56)
+  camera(p.x + flr(buffer.x) - 56, p.y + flr(buffer.y) - 56)
   last_camera_pos = p + buffer
 
   -- draw map
   --map(0, 0, 0, 0, 32, 30)
-  draw_map()
+  draw_map(make_vec2d(last_camera_pos.x / 16, last_camera_pos.y / 16))
 
   -- sneaky draw-layering to avoid excessive splitting of objects (TODO: for now...)
   draw_set(global_objects.object)
   draw_set(global_objects.actor)
-  draw_set({player})
+  if player.life > 0 then draw_set({player}) end
 
   -- -- TODO: refactor how we display the movement indicator to reduce tokens
-
+  -- up until the next comment is rendering the movement indicator
   local v = make_vec2d(player.pos.x, player.pos.y)
   local marker = sprite_store.select
 
@@ -257,22 +278,72 @@ function _draw()
     zspr(marker, ui.x, ui.y)
   end
 
-  if input_act == 5 then zspr(57, p.x + 4, p.y - 7, 1) end
-  if input_act == 6 then zspr(56, p.x + 4, p.y - 7, 1) end
+  local pvec = player:tile_shift()
+  local vec = make_vec2d(p.x + 3 + pvec.x * 2, p.y - 7 + pvec.y * 2)
+  if cutscene == 0 and player.life > 0 then
+    if input_act == 5 then print("\142", vec.x, vec.y, 8) end
+    if input_act == 6 then print("\151", vec.x, vec.y, 11) end
+    local cs = {"\148","\145","\131","\139"}
+    if input_dir > 0 then
+      local v = dir_to_vec(input_dir)
+      v.x = v.x * 8
+      v.y = v.y * 6
+      v = v + vec
+      if input_act > 1 then print(cs[input_dir], v.x, v.y, 7) end
+    end
+  end
 
   camera(0,0)
 
+  -- All UI gets drawn now
   draw_bar("life", player.life, player.max_life, 3, 2, 0)
   if player:in_water() then draw_bar("o2", player.o2, player.max_o2, 12, 1, 1) end
   if inventory.keycard_level > 0 then draw_keycard_ui() end
   if player.blood_prints > 0 then draw_blood_ui() end
+
+  ypress = 0
+  if input_act > 1 then ypress = 1 end
+
+  -- draw cutscene UI
+  if cutscene > 0 then
+    local n = #printmsg
+    local ys = (4-n) * 7
+    rectfill(0, 97 + ys, 127, 127, 0)
+    rectfill(0, 88 + ys, 49, 127, 0)
+    zspr(199 + character, 2, 89 + ys, 2, 1, 1, 5, 5)
+    --printh("ct_posx "..ct_pos.x)
+    -- if ct_focus then local p = to_pixel(ct_pos); zspr(30, p.x, p.y) end
+
+    print(characters[character], 13, 90 + ys, 7)
+    line(13,96 + ys,39,96 + ys,7)
+    for i=1,#printmsg,1 do
+      print(printmsg[i], 3, 92 + ys + i*7, 7)
+    end
+    print("\142", 42, 91 + ys, 2)
+    print("\142", 42, 90 + ys + ypress, 8)
+  end
+
+  if player.life <= 0 and game_speed == 3 then -- TODO: DRY game speed
+    print("you died.", 48, 54, 2)
+    print("you died.", 48, 53, 8)
+    print("press \142 to respawn", 27, 77, 2)
+    print("press \142 to respawn", 27, 76 + ypress, 8)
+  end
+
+  -- debug UI
+  -- print(stat(0), 32, 4, 7)
+  -- print(stat(2), 76, 4, 7)
+  -- print(stat(7), 76, 4, 7)
+
   rectcolor = 3
   if turn_start ~= nil then rectcolor = 5 end
+  if bar_frames["life"][2] > 0 then rectcolor = 8 end
   rect(0,0,127,127,rectcolor)
 end
 
 -- load a level.
 function load_level(l)
+  game_speed = 3 -- edit me!
   level_loaded = false
 
   reset_global_objects()
@@ -280,6 +351,7 @@ function load_level(l)
 
   inventory = copymt(checkpoint.inventory)
   global_time = time()
+  cutscene_time = time()
 
   restore_msets(current_level)
   current_level = l
@@ -350,7 +422,7 @@ function make_actor(pos, opts)
   -- game data
   t.life, t.max_life = 1, 1
   t.aquatic = false
-  t.variant = level_enemy_variants[current_level][global_object_counts[t.subpattern]] -- TODO: get variant from level data array
+  t.move_type = opts[4]
   -- blood prints data
   t.blood_prints, t.stunned_turns = 0, 0
   -- laser data
@@ -369,7 +441,7 @@ end
 
 function make_methods.make_player(t, mt)
   t.aquatic = true
-  t.variant = 1
+  t.move_type = "player"
   t.life, t.max_life = 3, 3 -- TODO: bosses raise your health
   local o2 = 3
   if inventory.diving_suit then o2 = 6 end
@@ -433,7 +505,8 @@ function make_methods.make_multidoor(t, mt)
     for p in all(self.scanner_positions) do
       local s = make_vec2d(p[1], p[2])
       local o = s:objects_on_here(nil,"multikey")[1]
-      if not o or o.activated ~= 1 then open = false end
+      if not o or o.activated == 0 then open = false end
+      o.door = self
     end
 
     if open then self.solid = 0; sfx(16) end
@@ -483,6 +556,13 @@ function make_methods.make_relay(t, mt)
   function mt.__index.sprite(self)
     return animations.relay[self.active + 1]
   end
+
+  function mt.__index.draw(self)
+  end
+  function mt.__index.draw_above(self)
+    local p = to_pixel(self.pos)
+    zspr(self:sprite(), p.x, p.y)
+  end
 end
 
 function make_methods.make_keycard(t, mt)
@@ -515,20 +595,23 @@ end
 
 function make_methods.make_multikey(t, mt)
   t.activated = 0
-
   function mt.__index.draw(self)
     local p = to_pixel(self.pos)
-    zspr(animations[self.subpattern][self.activated + 1], p.x, p.y)
+    zspr(animations[self.subpattern][1 + self.activated], p.x, p.y)
   end
 
   function mt.__index.activate(self)
     local actors = self.pos:actors_on_here()
-    if not actors then return end
-
     for a in all(actors) do
       if a.life > 0 and a ~= player then
-        self.activated = 1 - self.activated
-        sfx(20 - self.activated) -- cheeky!
+        local d = self.door
+        if d then
+          if d.solid == 1 then
+            self.activated = 1
+            sfx(19)
+          end
+          d:activate() -- buttons activate doors again so they open straight away
+        end
         return
       end
     end
@@ -561,7 +644,7 @@ function get_tile_pattern(tile)
       if tileobj == tile then return {p[1], p[2], 1} end -- return facing
     else
       for f, i in pairs(tileobj) do
-        if i == tile then return {p[1], p[2], f} end -- return facing
+        if i == tile then return {p[1], p[2], f, p[3]} end -- return facing
       end
     end
   end
@@ -587,6 +670,7 @@ function lmapset(v, l, tile)
 end
 
 function start_turn()
+
   for actor in all(global_objects.actor) do
     if actor.life > 0 then
       actor:determine_act()
@@ -627,7 +711,6 @@ function end_turn()
   player:attempt_melee()
   player:attempt_act(1)
 
-
   for a in all(global_objects.actor) do
     a:attempt_act(2)
     a.act = {0, 0}
@@ -636,6 +719,25 @@ function end_turn()
   for o in all(global_objects.object) do
     o:activate()
   end
+
+  trigger_cutscenes()
+end
+
+function trigger_cutscenes()
+  reset_cutscenes()
+  local triggers = level_cutscene_triggers[current_level]
+  if not player.pos then return end
+  for t in all(triggers) do
+    if player.pos.x == t[1] and player.pos.y == t[2] then
+      cutscene = t[3]
+    end
+  end
+end
+
+function reset_cutscenes()
+  cutscene_msg = 1
+  cutscene_total_diff = 0
+  printmsg = ""
 end
 
 -- Input funcs
@@ -686,6 +788,10 @@ function roll_frame()
     if a.laser.frames > 0 then a.laser.frames = a.laser.frames - 1 end
     if a.frames.n > 0 then a.frames.n = a.frames.n - 1 end
   end
+
+  for k,b in pairs(bar_frames) do
+    if b[2] > 0 then bar_frames[k] = {b[1], b[2] - 1} end
+  end
 end
 
 -- zoomed sprite
@@ -715,14 +821,21 @@ function draw_set(draws)
   end
 end
 
-function draw_map()
+function draw_map(camera_pos)
   for y = levels[current_level][2], levels[current_level][4] - 1, 1 do
-    if y < player.pos.y + 5 and y > player.pos.y - 5 then
+    if y < camera_pos.y + 5 and y > camera_pos.y - 5 then
       for x = levels[current_level][1], levels[current_level][3] - 1, 1 do
-        if x > player.pos.x - 5 and x < player.pos.x + 5 then
+        if x > camera_pos.x - 5 and x < camera_pos.x + 5 then
           local v = make_vec2d(x, y)
           local pp = to_pixel(v)
           local tile = lmapget(v)
+          if tile == 182 then -- cheap water effect
+            if frame < 2 then
+              tile = 183
+            elseif frame > 3 then
+              tile = 184
+            end
+          end
           if tile > 0 then zspr(tile, pp.x, pp.y) end
         end
       end
@@ -732,11 +845,22 @@ end
 
 -- draw ui bar
 function draw_bar(label, current, full, full_color, empty_color, position)
+  if not bar_frames[label] then bar_frames[label] = {current, 0} end
+  border = 6
+
+  if bar_frames[label][1] > current then bar_frames[label][2] = 2 end
+  bar_frames[label][1] = current
+
+  if bar_frames[label][2] > 0 then border = 8 end
+
   barp = position * 10
-  rect(2, 2 + barp, full * 5 + 3, 7 + barp, 6)
-  rectfill(3, 3 + barp, full * 5 + 2, 6 + barp, empty_color)
-  if current > 0 then rectfill(3, 3 + barp, current * 5 + 2, 6 + barp, full_color) end
-  print(label, 4, 6 + barp, 7)
+  shake = border - 6
+  rect(2 + shake, 2 + barp, full * 5 + 3 + shake, 7 + barp, border)
+  rectfill(3 + shake, 3 + barp, full * 5 + 2 + shake, 6 + barp, empty_color)
+  if current > 0 then rectfill(3 + shake, 3 + barp, current * 5 + 2 + shake, 6 + barp, full_color) end
+  printcolor = 7
+  if current <= 0 then printcolor = 8 end
+  print(label, 4 + shake, 6 + barp, printcolor)
 end
 
 function draw_blood_ui()
@@ -799,7 +923,7 @@ function actor_methods.attempt_melee(self)
   attack_point = self:act_pos()
   h = attack_point:actors_on_here("player")
   for a in all(h) do
-    if a.life > 0 then a.stunned_turns = 3 end
+    if a.life > 0 then a.stunned_turns = 3; sfx(23); player:set_frames("crouch", 2) end
   end
 end
 
@@ -818,10 +942,6 @@ end
 
 function actor_methods.turn_to_face_act(self)
   if self.act[2] > 0 then self.facing = self.act[2] end
-end
-
-function actor_methods.move_type(self)
-  return enemy_variants[self.subpattern][self.variant][1]
 end
 
 function actor_methods.determine_act(self)
@@ -846,6 +966,7 @@ function actor_methods.determine_act(self)
   self.act[2] = self.facing
 
   self:determine_facing()
+  if player.life <= 0 then return end -- otherwise enemies keep shooting
 
   tiles = self:tiles_ahead(previous_facing, true)
   for k, tile in pairs(tiles) do
@@ -871,9 +992,9 @@ function actor_methods.determine_act(self)
 end
 
 function actor_methods.determine_facing(self)
-  local mvt = self:move_type()
+  local mvt = self.move_type
   local apos = self:act_pos()
-  if mvt == "clockwise" then
+  if mvt == "clock" then
     local directions_tried = 0
     while apos == self.pos do
       local f = self.facing + 1
@@ -1012,6 +1133,7 @@ function actor_methods.hurt(self, amount, hide_anim)
   if self.life == 0 then
     sfx(5)
     if not hide_anim then self:set_frames("death", 4) end
+    if self == player then game_speed = 1 end
   else
     sfx(5, -1, 1, 3)
     if not hide_anim then self:set_frames("hurt", 2) end
@@ -1021,6 +1143,7 @@ end
 function actor_methods.fall(self)
   self.life = -2
   self:set_frames("fall", 2)
+  if self == player then game_speed = 1 end
 end
 
 function actor_methods.tiles_ahead(self, d, ignore_glass)
@@ -1045,7 +1168,7 @@ function actor_methods.draw_sprite(self)
   ssw, ssh, y_shift = 8, 8, 0
   if self:in_water() then ssh = 4; y_shift = 2 end
 
-  palswap = enemy_variants[self.subpattern][self.variant][2]
+  palswap = enemy_variants[self.subpattern][self.move_type]
   pal(palswap[1], palswap[2])
   zspr(self:sprite(), p.x + s.x * 2, p.y + s.y * 2 + y_shift, 2, 1, 1, ssw, ssh)
   pal(palswap[1], palswap[1])
@@ -1064,7 +1187,7 @@ end
 function actor_methods.draw_above(self)
   -- draw speculative lasers
   anim = animations[self.subpattern][7]
-  if self.act[1] == 2 or (self == player and input_act == 5 and turn_start == nil) then
+  if self.act[1] == 2 then
     d = self.act[2]
     if self == player and input_act == 5 then d = input_dir end
     if d <= 0 then d = self.facing end
@@ -1076,12 +1199,11 @@ function actor_methods.draw_above(self)
       zspr(s, t.x, t.y)
     end
   end
-
   -- draw post-shot lasers
   l = self.laser
   s = anim[l.dir]
 
-  if l.frames > 0 then
+  if l.frames > 0 and l.dir > 0 then
     for tile in all(l.tiles) do
       if l.frames == 1 then pal(8,2); pal(11,3) end
       t = to_pixel(tile)
@@ -1103,6 +1225,7 @@ function actor_methods.sprite(self)
     if frames_pattern == "death" then return animations[pattern][5][(4 - frames_n) + 1] end
     if frames_pattern == "hurt" then return animations[pattern][5][(2 - frames_n) + 1] end
     if frames_pattern == "fall" then return animations[pattern][6][(2 - frames_n) + 1] end
+    if frames_pattern == "crouch" then return animations[pattern][self.facing][7] end
   end
 
   if self.life <= 0 then
@@ -1110,6 +1233,7 @@ function actor_methods.sprite(self)
     return animations[pattern][5][4]
   end
 
+  if self.stunned_turns == 1 then return animations[pattern][8][(frame % 2) + 3] end
   if self.stunned_turns > 0 then return animations[pattern][8][(frame % 2) + 1] end
 
   anim = animations[pattern][self.facing]
@@ -1119,9 +1243,11 @@ function actor_methods.sprite(self)
   end
 
   -- TODO: refactor this into player sprite method
-  if input_act == 6 and self == player and turn_start == nil then return animations[pattern][input_dir][1] end
-  if input_act == 5 and self == player and turn_start == nil then anim = animations[pattern][input_dir] end
-  if self.act[1] == 2 or (input_act == 5 and self == player and turn_start == nil) then return anim[6] end
+  if cutscene == 0 then
+    if input_act == 6 and self == player and turn_start == nil then return animations[pattern][input_dir][1] end
+    if input_act == 5 and self == player and turn_start == nil then anim = animations[pattern][input_dir] end
+    if self.act[1] == 2 or (input_act == 5 and self == player and turn_start == nil) then return anim[6] end
+  end
 
   return default_sprite(pattern, self.facing)
 end
@@ -1269,3 +1395,17 @@ end
 function n_to_vec(n)
   return make_vec2d(8 * (n % 16), 8 * flr(n / 16))
 end
+
+-- dump object to string
+-- function dump(o)
+--    if type(o) == 'table' then
+--       local s = '{ '
+--       for k,v in pairs(o) do
+--          if type(k) ~= 'number' then k = '"'..k..'"' end
+--          s = s .. '['..k..'] = ' .. dump(v) .. ','
+--       end
+--       return s .. '} '
+--    else
+--       return tostring(o)
+--    end
+-- end

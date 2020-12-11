@@ -1,6 +1,6 @@
 [
   {
-    "files": "**/*.lua",
+    "files": "main.lua",
     "command": "make build"
   }
 ]
